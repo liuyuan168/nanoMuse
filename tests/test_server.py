@@ -1218,6 +1218,79 @@ def test_connections_model_key_goes_to_the_vault(server, settings: Settings):
     assert client.put("/api/connections/llm", json={"tool_mode": "bogus"}).status_code == 400
 
 
+def test_llm_test_answers_for_the_forms_own_values(server, monkeypatch):
+    """The Test button runs what the form says, saved or not: a throwaway client with the
+    form's values, the endpoint following the provider when the form names no URL."""
+    client, service, _ = server
+    built: dict[str, Any] = {}
+
+    class Recorder(MockLLM):
+        def __init__(self, llm_settings, data_dir=None):  # noqa: ANN001
+            super().__init__([LLMResponse(content="OK")])
+            built["settings"] = llm_settings
+
+    from nanomuse.server import connections as connections_mod
+
+    monkeypatch.setattr(connections_mod, "create_llm", Recorder)
+    r = client.post(
+        "/api/connections/llm/test",
+        json={
+            "provider": "zhipu",
+            "model": "glm-5.3",
+            "base_url": "",
+            "api_key": "sk-from-the-form",
+        },
+    )
+    assert r.status_code == 200
+    assert r.json()["ok"] is True and r.json()["reply"] == "OK"
+    s = built["settings"]
+    assert (s.provider, s.model) == ("zhipu", "glm-5.3")
+    assert s.api_key == "sk-from-the-form"
+    # an empty URL means the provider's own endpoint, never the slot's previous one
+    assert s.base_url is None
+    # nothing was saved: the running slot is untouched
+    assert service.app.llm.name == "mock"
+    assert client.get("/api/connections").json()["llm"]["from_app"] is False
+
+    # a key the form leaves blank falls back to the slot's, resolved from the vault
+    client.put("/api/connections/llm", json={"provider": "zhipu", "api_key": "sk-in-the-vault"})
+    client.post(
+        "/api/connections/llm/test",
+        json={"provider": "zhipu", "model": "glm-5.3", "base_url": "", "api_key": None},
+    )
+    assert built["settings"].api_key == "sk-in-the-vault"
+
+
+def test_llm_provider_switch_leaves_the_old_endpoint_behind(server):
+    """DeepSeek's endpoint with Zhipu's key is a 401 either way: switching the provider
+    without naming a URL resets the slot to the catalogue's endpoint for it."""
+    client, service, _ = server
+    service.settings.llm.base_url = "https://api.deepseek.com"
+    r = client.put(
+        "/api/connections/llm",
+        json={"provider": "zhipu", "model": "glm-5.3", "base_url": "", "api_key": "sk-zhipu"},
+    )
+    assert r.status_code == 200
+    assert service.settings.llm.provider == "zhipu"
+    assert service.settings.llm.base_url is None
+    # the client built for the slot got the catalogue's endpoint, not DeepSeek's
+    assert service.app.llm.settings.base_url == "https://open.bigmodel.cn/api/paas/v4"
+    # and the overlay on disk keeps that meaning across a restart
+    on_disk = json.loads((service.settings.data_dir / "app-settings.json").read_text())
+    assert on_disk["llm"]["base_url"] == ""
+    from nanomuse.config import apply_app_settings, load_app_settings
+
+    apply_app_settings(service.settings, load_app_settings(service.settings.data_dir))
+    assert service.settings.llm.base_url is None
+
+    # a URL the form does name still wins (a custom endpoint on a known provider)
+    r = client.put(
+        "/api/connections/llm",
+        json={"provider": "zhipu", "model": "glm-5.3", "base_url": "https://gw.internal/v4"},
+    )
+    assert r.status_code == 200 and service.settings.llm.base_url == "https://gw.internal/v4"
+
+
 def test_connections_model_proxy_is_written_masked_and_cleared(server, settings: Settings):
     """`[llm] proxy` from the app: http(s) or socks5(h) only, credentials never come back
     whole, "" clears it, and the model client is rebuilt with it."""

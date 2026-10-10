@@ -369,7 +369,21 @@ export function ModelCard({
   const runTest = async () => {
     setTesting(true);
     try {
-      setTest(await api.testLLM());
+      // the form as it stands, saved or not: the endpoint follows the provider, and a key
+      // left blank falls back to the one in the vault
+      setTest(
+        await api.testLLM(
+          p?.cloud
+            ? undefined
+            : {
+                provider: p?.provider ?? "openai",
+                model: model.trim(),
+                base_url: effectiveUrl.trim(),
+                tool_mode: toolMode,
+                api_key: key ? key : keyless ? "" : null,
+              },
+        ),
+      );
     } catch (e) {
       setTest({ ok: false, error: (e as Error).message });
     } finally {

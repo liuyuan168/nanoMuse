@@ -33,6 +33,7 @@ from nanomuse.config import (
     save_app_settings,
 )
 from nanomuse.contacts import OWN
+from nanomuse.llm import BaseLLM, create_llm
 from nanomuse.llm.chatgpt import DEFAULT_MODEL as CHATGPT_DEFAULT_MODEL
 from nanomuse.logger import logger
 from nanomuse.schema import Message
@@ -566,6 +567,14 @@ class Connections:
             llm["base_url"] = ""
         if llm.get("tool_mode") not in (None, "", "auto", "native", "prompt"):
             raise ValueError("tool_mode must be 'auto', 'native' or 'prompt'")
+        if (
+            llm.get("provider")
+            and str(llm["provider"]) != self.settings.llm.provider
+            and not str(body.get("base_url") or "").strip()
+        ):
+            # a different provider means a different endpoint: the catalogue's, not the
+            # one the slot happened to be on (DeepSeek's URL with Zhipu's key is a 401)
+            llm["base_url"] = ""
         if body.get("proxy") is not None:
             # this provider's requests through one proxy, never nanoMuse Cloud; "" clears
             llm["proxy"] = normalize_proxy(str(body["proxy"]))
@@ -878,16 +887,53 @@ class Connections:
             error = f"{type(exc).__name__}"
         return {"models": catalogue, "source": "catalogue", "error": error}
 
-    async def test_llm(self) -> dict[str, Any]:
+    def _form_llm(self, body: dict[str, Any]) -> BaseLLM:
+        """A throwaway client for the form's own values, nothing saved or swapped: the
+        endpoint follows the provider (a URL the form names wins), a key the form does
+        not carry comes from the vault — what saving these values would run with."""
+        cur = self.settings.llm
+        provider = check_provider(str(body.get("provider") or cur.provider))
+        tool_mode = str(body.get("tool_mode") or cur.tool_mode or "auto")
+        if tool_mode not in ("auto", "native", "prompt"):
+            tool_mode = "auto"
+        api_key = cur.api_key
+        if body.get("api_key") is not None:
+            api_key = str(body["api_key"]).strip()
+        if self.vault.has_placeholders(api_key):
+            api_key = self.vault.resolve(api_key, strict=False)
+            if self.vault.has_placeholders(api_key):
+                api_key = ""
+        settings = cur.model_copy(
+            update={
+                "provider": provider,
+                "model": str(body.get("model") or cur.model or "").strip(),
+                # an empty URL means "the provider's own endpoint", never the slot's old one
+                "base_url": normalize_base_url(str(body.get("base_url") or "")) or None,
+                "tool_mode": tool_mode,
+                "api_key": api_key,
+            }
+        )
+        return create_llm(settings, data_dir=self.settings.data_dir)
+
+    async def test_llm(self, body: dict[str, Any] | None = None) -> dict[str, Any]:
+        """One round trip to the model: the form's own values when ``body`` carries them
+        (nothing saved), the slot the app is running otherwise."""
         loop = asyncio.get_running_loop()
         started = loop.time()
+        llm = self.svc.app.llm
+        throwaway: BaseLLM | None = None
+        if body:
+            throwaway = llm = self._form_llm(body)
         try:
             response = await asyncio.wait_for(
-                self.svc.app.llm.ask([Message.user("Reply with the single word OK.")], tools=None),
+                llm.ask([Message.user("Reply with the single word OK.")], tools=None),
                 timeout=45,
             )
         except Exception as exc:  # noqa: BLE001
             return _test_failed(exc)
+        finally:
+            if throwaway is not None:
+                keep_task(loop.create_task(throwaway.close()))
         return {
             "ok": True,
             "reply": (response.content or "").strip()[:200],

@@ -920,8 +920,13 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
             raise HTTPException(400, str(exc)) from exc
 
     @app.post("/api/connections/llm/test", dependencies=dep)
-    async def test_llm() -> dict[str, Any]:
-        return await conn.test_llm()
+    async def test_llm(body: LLMBody | None = None) -> dict[str, Any]:
+        """The form's own values when the body carries them (nothing saved), the running
+        model otherwise."""
+        try:
+            return await conn.test_llm(body.model_dump() if body else None)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
 
     @app.post("/api/llm/models", dependencies=dep)
     async def llm_models(body: LLMModelsBody) -> dict[str, Any]:

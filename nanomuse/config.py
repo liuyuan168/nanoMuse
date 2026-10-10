@@ -873,6 +873,11 @@ def apply_app_settings(settings: Settings, data: dict[str, Any]) -> None:
     """Layer app-managed settings over ``settings`` in place."""
     if llm := data.get("llm"):
         for key in ("provider", "model", "base_url", "api_key", "tool_mode", "vision"):
+            if key == "base_url" and llm.get(key) == "":
+                # "" is "the provider's own endpoint": the catalogue fills it in. Kept as
+                # a value, it would resurrect the config.toml URL of a provider the slot
+                # has left (that endpoint with this key is a 401).
+                settings.llm.base_url = None
             if key in llm and llm[key] not in (None, ""):
                 if key == "provider":
                     try:
