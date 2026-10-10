@@ -146,6 +146,18 @@ enum NanoMuseSlotResolver {
     static func automatic(slot: NanoMuseSlot, chatProviderId: String?, providers: [NanoMuseSlotProvider]) -> NanoMuseSlotChoice? {
         resolve(slot: slot, chosen: nil, chatProviderId: chatProviderId, providers: providers)
     }
+
+    /// Where the chat slot goes when the provider `leaving` is switched off while new chats
+    /// answered through it: the first other provider in `providers` (the order they were added)
+    /// that chats, on its default chat model (the catalogue's default for that provider, else
+    /// its first chat model). Nil when nothing else could answer; the switch is then refused.
+    /// Android: `ModelSlots.nextChat`.
+    static func nextChat(leaving: String, providers: [NanoMuseSlotProvider]) -> NanoMuseSlotChoice? {
+        for p in providers where p.id != leaving && p.has(.chat) {
+            if let model = p.defaultModel(for: .chat) { return NanoMuseSlotChoice(providerId: p.id, model: model) }
+        }
+        return nil
+    }
 }
 
 // MARK: - The picker's groups (pure, tested)
@@ -417,6 +429,25 @@ enum NanoMuseModelSlots {
     /// The instance new chats start on, if any.
     static func chatProviderId() -> String? { chatEntry()?.providerInstanceId }
 
+    /// Whether the chat slot could leave `instanceId` (nanoMuse Cloud, when its switch goes
+    /// off): new chats do not run on it, or a provider of one's own could take them
+    /// (`NanoMuseSlotResolver.nextChat`). False is the refusal the switch shows as one sentence.
+    static func canLeave(_ instanceId: String) -> Bool {
+        chatProviderId() != instanceId || NanoMuseSlotResolver.nextChat(leaving: instanceId, providers: providers()) != nil
+    }
+
+    /// `instanceId` was switched off: when new chats answered through it, the chat slot and the
+    /// main chat move to the next provider that chats (`useForChat`), so the Models page names
+    /// what answers and no chat stops at the switch. Nothing moves when the slot was elsewhere
+    /// or nothing is left; call after the instance was written off. Returns what it moved to.
+    @discardableResult
+    static func chatLeaves(_ instanceId: String) -> NanoMuseSlotChoice? {
+        guard chatProviderId() == instanceId,
+              let next = NanoMuseSlotResolver.nextChat(leaving: instanceId, providers: providers()),
+              useForChat(instanceId: next.providerId, model: next.model) else { return nil }
+        return next
+    }
+
     /// The chat slot as a choice, or nil when no group can answer.
     static func chatChoice() -> NanoMuseSlotChoice? {
         guard let e = chatEntry() else { return nil }
@@ -460,6 +491,9 @@ enum NanoMuseModelSlots {
     /// pick in the chat's own picker, SessionModelPicker); side chats are left as they are.
     /// Nothing is written when the binding already says so, which also keeps the
     /// `sessionModelBindingChanged` → `followPick` → `useForChat` round from going on.
+    /// The group's default thinking level comes along, as it does when a group is picked in
+    /// the chat's own picker and when a new chat is made (`applyGroupSessionDefaults`): a
+    /// group the person set to think hard was followed with the main chat still on `off`.
     static func mainChatFollows(groupId: String, entry: ModelEntry) {
         guard let sid = UserDefaults.standard.string(forKey: NanoMuseMainChat.key), !sid.hasPrefix(NanoMuseMainChat.draftPrefix) else { return }
         let store = ProviderConfigStore.shared
@@ -467,6 +501,11 @@ enum NanoMuseModelSlots {
         let existing = store.binding(for: sid)
         if existing?.primarySource == source { return }
         store.setBinding(SessionModelBinding(sessionId: sid, primarySource: source, subModelSource: existing?.subModelSource), for: sid)
+        if let level = store.group(for: groupId)?.defaultThinkingLevel {
+            var cfg = store.inferenceConfig(for: sid) ?? SessionInferenceConfig()
+            cfg.thinkingLevel = level
+            store.setInferenceConfig(cfg, for: sid)
+        }
         NotificationCenter.default.post(name: .sessionModelBindingChanged, object: nil, userInfo: ["groupId": groupId, "sessionId": sid])
         let model = entry.model.id
         Task { await ChatStore.shared.updateSessionModelId(sid, modelId: model) }

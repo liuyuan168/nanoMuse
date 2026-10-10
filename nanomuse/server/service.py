@@ -28,13 +28,13 @@ from nanomuse.app import NanoMuseApp
 from nanomuse.avatar import AvatarStudio
 from nanomuse.background import spawn
 from nanomuse.bridge.server import Bridge
-from nanomuse.cloud import model_url
+from nanomuse.cloud import CLOUD_KEY, DEFAULT_CHAT_MODEL, CloudError, model_url
 from nanomuse.coding.service import CodingService
-from nanomuse.config import Settings
+from nanomuse.config import LLMSettings, Settings
 from nanomuse.goals import Goal
 from nanomuse.hub.service import HubService
 from nanomuse.llm import BaseLLM
-from nanomuse.llm.factory import llm_ready
+from nanomuse.llm.factory import create_llm, llm_ready
 from nanomuse.logger import logger
 from nanomuse.memory.consolidate import TidyReport, tidy
 from nanomuse.nudges import NudgesPolicy
@@ -44,7 +44,14 @@ from nanomuse.schema import Attachment, Message, Role
 from nanomuse.sentinel.grants import normalize_scope
 from nanomuse.server import firstrun
 from nanomuse.server.connections import Connections
-from nanomuse.server.events import MAIN_THREAD, EventBus, Timeline, new_id, now_iso
+from nanomuse.server.events import (
+    MAIN_THREAD,
+    STOPPED_NOTICE,
+    EventBus,
+    Timeline,
+    new_id,
+    now_iso,
+)
 from nanomuse.server.failures import failure_notice
 from nanomuse.server.providers import ChatGPTSignIn, Providers
 from nanomuse.server.push import PushService
@@ -182,6 +189,12 @@ COMMUNICATION: dict[str, str] = {
 # how the configured interval stretches or shrinks per level
 _INTERVAL_FACTOR = {"low": 2.0, "default": 1.0, "high": 0.5}
 _QUIET_HOURS_RE = re.compile(r"^([01]?\d|2[0-3]):([0-5]\d)-([01]?\d|2[0-3]):([0-5]\d)$")
+# A thread id arrives over the WebSocket and names a file in the threads folder, so it
+# carries no separator: the same rule as channels' thread_id_for, whose longest id is
+# "channel-" plus an 80-character chat id.
+_THREAD_ID_RE = re.compile(r"[A-Za-z0-9_.-]{1,128}")
+# how long `stop()` lets a cancelled worker take to settle before closing over its work
+_SHUTDOWN_GRACE_S = 5.0
 
 
 @dataclass
@@ -494,10 +507,34 @@ class MuseService:
     async def stop(self) -> None:
         if self._scheduler:
             self._scheduler.cancel()
+        loop = asyncio.get_running_loop()
+        workers: list[asyncio.Task[None]] = []
         for t in self.threads.values():
-            if t.worker:
-                t.worker.cancel()
-        await asyncio.sleep(0)
+            work = t.worker
+            if work is None or work.done() or work.get_loop() is not loop:
+                # nothing to wait for, or a task of a loop that is already closed (an app
+                # built twice in one process, as a test does): cancelling it means nothing
+                # and waiting on it would raise across the loops
+                continue
+            work.cancel()
+            workers.append(work)
+        if workers:
+            # cancelled is not finished: a worker still runs its own settling once the
+            # CancelledError lands — the stopped notice, the timeline, the store — and doing
+            # that after the flushes and the closes below is the "Exception ignored ... during
+            # shutdown" of the log. Wait, but only so long: a worker wedged in a provider
+            # response must not hold the exit.
+            try:
+                await asyncio.wait_for(
+                    asyncio.gather(*workers, return_exceptions=True),
+                    _SHUTDOWN_GRACE_S,
+                )
+            except TimeoutError:
+                logger.warning(
+                    "shutdown: {} worker(s) were still running after {:.0f}s; closing over their work",
+                    len(workers),
+                    _SHUTDOWN_GRACE_S,
+                )
         for t in self.threads.values():
             t.timeline.flush()
         await self.chatgpt.close()
@@ -731,8 +768,13 @@ class MuseService:
         if not any(m.get("id") == MAIN_THREAD for m in metas):
             metas.insert(0, {"id": MAIN_THREAD, "title": "Main chat", "created_at": now_iso()})
         for m in metas:
+            tid = str(m.get("id") or "")
+            if not _THREAD_ID_RE.fullmatch(tid):
+                # an id the app would refuse now: drop the line rather than refuse to start
+                logger.warning("threads index: ignoring the entry with the id {!r}", tid)
+                continue
             thread = self._make_thread(
-                m["id"], m.get("title", m["id"]), m.get("created_at"), m.get("updated_at")
+                tid, m.get("title", tid), m.get("created_at"), m.get("updated_at")
             )
             if m.get("device"):
                 thread.device = str(m["device"])
@@ -770,6 +812,16 @@ class MuseService:
             json.dumps(metas, ensure_ascii=False, indent=1), "utf-8"
         )
 
+    def _thread_file(self, thread_id: str, suffix: str) -> Path:
+        """The file a thread id names: checked, not escaped, because the id is something a
+        client sends and it would otherwise choose where the thread's data lives."""
+        if not _THREAD_ID_RE.fullmatch(str(thread_id)):
+            raise ValueError(f"invalid thread id: {thread_id}")
+        path = (self.threads_dir / f"{thread_id}{suffix}").resolve()
+        if path.parent != self.threads_dir.resolve():
+            raise ValueError(f"invalid thread id: {thread_id}")
+        return path
+
     def _make_thread(
         self,
         thread_id: str,
@@ -777,7 +829,7 @@ class MuseService:
         created_at: str | None = None,
         updated_at: str | None = None,
     ) -> Thread:
-        timeline = Timeline(thread_id, self.threads_dir / f"{thread_id}.json")
+        timeline = Timeline(thread_id, self._thread_file(thread_id, ".json"))
         # Cards that were waiting for an answer when the server stopped can't be answered
         # any more: the agent run behind them is gone.
         stale = [
@@ -800,7 +852,7 @@ class MuseService:
             # a hold lives in memory: after a restart nothing waits on it any more
             if ev.get("type") == "hold" and ev.get("status") == "on":
                 timeline.update(ev["id"], status="off", stale=True)
-        session_file = self.threads_dir / f"{thread_id}.session.json"
+        session_file = self._thread_file(thread_id, ".session.json")
         agent = MuseAgent(
             settings=self.settings,
             llm=self.app.llm,
@@ -914,8 +966,8 @@ class MuseService:
         self.app.holds.clear_thread(thread.id)
         self.app.sentinel.end_conversation(thread.id)
         pairs = (
-            (thread.timeline.path, self.threads_dir / f"{new_id}.json"),
-            (thread.agent.session_file, self.threads_dir / f"{new_id}.session.json"),
+            (thread.timeline.path, self._thread_file(new_id, ".json")),
+            (thread.agent.session_file, self._thread_file(new_id, ".session.json")),
         )
         # a write still on its way to disk lands under the new id, not the old one
         thread.timeline.path = pairs[0][1]
@@ -1000,7 +1052,9 @@ class MuseService:
         agent.state = agent.state.__class__.IDLE
         agent._save_session()
         thread.stopping = False
-        self.ui.emit({"type": "notice", "level": "info", "text": "Stopped.", "thread": thread.id})
+        self.ui.emit(
+            {"type": "notice", "level": "info", "text": STOPPED_NOTICE, "thread": thread.id}
+        )
 
     def clear_thread(self, thread_id: str) -> bool:
         thread = self.threads.get(thread_id)
@@ -1023,17 +1077,22 @@ class MuseService:
         label: str = "",
         files: list[str] | None = None,
         language: str = "",
+        via: str = "",
     ) -> dict[str, Any]:
         """Queue a message for a thread. Returns the timeline event that was created.
 
         ``files`` are workspace paths of attachments (uploaded first with ``save_upload``);
         a message may be attachments alone. ``language`` is the BCP-47 tag of the client's
-        screens when the client said; the agent answers in it (see MuseAgent.run)."""
+        screens when the client said; the agent answers in it (see MuseAgent.run).
+        ``via="cloud"`` is *Use nanoMuse Cloud this time*: this one turn runs on the
+        account's recommended chat model (see :meth:`cloud_once`); the next is back on
+        the configured model. A CloudError when that is not possible."""
         text = text.strip()
         language = language.strip()
         attachments = [self.attachment(path) for path in files or []]
         if not text and not attachments:
             raise ValueError("empty message")
+        once = self.cloud_once() if via == "cloud" else None
         thread = self.threads.get(thread_id) or self._make_thread(thread_id, thread_id)
         thread.updated_at = now_iso()
         if language:
@@ -1043,6 +1102,9 @@ class MuseService:
             # a chat addressed to another device: the text runs there, not here
             if thread.busy:
                 raise ValueError(f"{thread.device_name or 'the device'} is still busy")
+            if once is not None and once[0] is not None:
+                # that device picks its own model; the one-turn client is not needed
+                spawn(once[0].close(), "closing the one-turn Cloud client")
             event = self.ui.emit({"type": "user", "text": text, "thread": thread_id})
             self.hub.run_remote(thread, text)
             return event
@@ -1050,6 +1112,9 @@ class MuseService:
             event_data: dict[str, Any] = {"type": "user", "text": text, "thread": thread_id}
             if attachments:
                 event_data["files"] = [a.model_dump() for a in attachments]
+            if once is not None:
+                # the turn's events name the model it ran on (the reply and a failure too)
+                event_data["model_used"] = once[1]
             if source == "device":
                 # asked by another device over the hub; shown as a bubble with its name
                 event_data["via"] = label
@@ -1098,11 +1163,41 @@ class MuseService:
             )
             if label:
                 thread.purposes[text] = label
-        thread.inbox.put_nowait(
-            Incoming(text, attachments, language) if attachments or language else text
-        )
+        if once is not None:
+            thread.inbox.put_nowait(Incoming(text, attachments, language, once[0], once[1]))
+        else:
+            thread.inbox.put_nowait(
+                Incoming(text, attachments, language) if attachments or language else text
+            )
         self._ensure_worker(thread)
         return event
+
+    def cloud_once(self) -> tuple[BaseLLM | None, str]:
+        """The client for *Use nanoMuse Cloud this time* (the own-key models contract, §4)
+        and the model's id: the account's recommended chat model under the Cloud key from
+        the vault, for one turn. ``[llm]``, ``[cloud] models`` and the conversation stay as
+        they are; a turn later the thread is back on the configured model. Refused with a
+        CloudError when nobody is signed in (401 ``signed_out``). When the chat already runs
+        on the account there is nothing to switch: the client is None, the id is the
+        configured model's."""
+        if not self.app.cloud_signed_in():
+            raise CloudError(401, "signed_out", "Sign in to nanoMuse Cloud first.")
+        if self.app.llm_is_cloud():
+            return None, self.settings.llm.model
+        model = self.hub.chat_models[0] if self.hub.chat_models else DEFAULT_CHAT_MODEL
+        llm = self.settings.llm
+        merged = LLMSettings(
+            provider="openai",
+            model=model,
+            base_url=model_url(self.hub.cloud.base_url),
+            api_key=self.app.vault.get(CLOUD_KEY) or "",
+            tool_mode="auto",
+            stream=llm.stream,
+            temperature=llm.temperature,
+            max_tokens=llm.max_tokens,
+            timeout=llm.timeout,
+        )
+        return create_llm(merged, data_dir=self.settings.data_dir), model
 
     # ------------------------------------------------------------------ attachments
     def attachment(self, rel: str) -> Attachment:
@@ -1153,6 +1248,10 @@ class MuseService:
                 text = incoming.text
                 thread.busy = True
                 thread.agent.inbox = thread.inbox
+                if incoming.llm is not None:
+                    # *Use nanoMuse Cloud this time*: this turn on the account's model, the
+                    # configured client back when it ends (or whatever a switch meanwhile set)
+                    thread.agent.llm = incoming.llm
                 self.bus.publish({"kind": "thread", "thread": thread.meta()})
                 # No sentence of its own: each client words the pause between steps
                 # itself ("On it: <the request>") in its language.
@@ -1164,7 +1263,7 @@ class MuseService:
                     thread.agent.prompt_addendum = (
                         None if purpose else self._firstrun_addendum_for(thread.id)
                     )
-                    self.ui.begin_run(thread.id, background=purpose)
+                    self.ui.begin_run(thread.id, background=purpose, model_used=incoming.model)
                     final = await thread.agent.run(
                         text, purpose=purpose, files=incoming.files, language=incoming.language
                     )
@@ -1178,18 +1277,36 @@ class MuseService:
                     raise
                 except Exception as exc:  # noqa: BLE001
                     logger.exception("thread {} failed", thread.id)
-                    self.ui.emit(failure_notice(exc, thread.id))
+                    notice = failure_notice(exc, thread.id)
+                    if incoming.model:
+                        notice["model_used"] = incoming.model
+                    self.ui.emit(notice)
                     if thread.agent.state.value == "error":
                         thread.agent.state = thread.agent.state.__class__.IDLE
                 finally:
                     self.ui.end_run(thread.id)
                     thread.agent.inbox = None
+                    self._release_llm(thread)
                     thread.busy = False
                     thread.updated_at = now_iso()
                     self.ui.set_status("idle", "", thread.id)
                     self.bus.publish({"kind": "thread", "thread": thread.meta()})
         finally:
             current_thread.reset(token)
+
+    def _release_llm(self, thread: Thread) -> None:
+        """A run ended: the thread goes back to the configured model client. The client the
+        run held, when it is another one (the one-turn Cloud client of *Use nanoMuse Cloud
+        this time*, or the client a model switch replaced while this turn was running; see
+        ``Connections._swap_llm``), is closed once no other running turn still holds it."""
+        held = thread.agent.llm
+        thread.agent.llm = self.app.llm
+        if held is self.app.llm:
+            return
+        for other in self.threads.values():
+            if other is not thread and other.busy and other.agent.llm is held:
+                return
+        spawn(held.close(), "closing a retired model client")
 
     def _finish_run(self, thread: Thread, purpose: str | None, final: str, quiet: bool) -> None:
         """The run's last word: shown as the assistant bubble unless it is on screen
@@ -1204,6 +1321,8 @@ class MuseService:
             event = {"type": "assistant", "text": final, "thread": thread.id, "final": True}
             if quiet:
                 event["quiet"] = True
+            if thread.id in self.ui.model_once:
+                event["model_used"] = self.ui.model_once[thread.id]
             event = self.ui.emit(event)
         else:
             eid = self.ui.last_assistant_event.get(thread.id)
@@ -1629,7 +1748,7 @@ class MuseService:
         if item.kind != "hook":
             # the mail or the event is the user's private data: from here on, sending
             # anything to a host that is not allowlisted is an approval
-            self.app.sentinel.tainted = True
+            self.app.sentinel.taint(thread)
         self.send(
             thread,
             prompts.TRIGGER_PROMPT.format(
@@ -2179,6 +2298,21 @@ class MuseService:
         lines.append(f"- today's date: {datetime.now().strftime('%A %d %B %Y')}")
         return lines
 
+    def feed_language(self) -> str:
+        """The language the feed is written in, for the prompt. A reply language set under
+        Settings wins; else the language of the person's screens, as the main chat last heard
+        it from a client or as Start was pressed in the first conversation (a batch written
+        the moment the setup ends has no reply of the person's yet to take the language
+        from); else whatever the context is written in."""
+        fixed = self.settings.agent.language
+        if fixed not in ("", "auto"):
+            return fixed
+        main = self.threads.get(MAIN_THREAD)
+        ui = prompts.language_name(main.agent.ui_language) if main is not None else ""
+        if not ui:
+            ui = prompts.language_name(self.firstrun.state.lang)
+        return ui or "the same language as the context above"
+
     async def write_feed_posts(self, n: int = 3) -> dict[str, Any]:
         """Write a fresh batch of posts and notify the phone once about the first."""
         if self._writing_feed:
@@ -2186,16 +2320,13 @@ class MuseService:
         self._writing_feed = True
         try:
             data = self.feed_posts()
-            language = self.settings.agent.language
             prompt = FEED_PROMPT.format(
                 name=self.profile.name,
                 n=n,
                 instructions=data["instructions"]
                 or "(none yet; write what a good personal agent would)",
                 context="\n".join(self._feed_context()),
-                language="the same language as the context above"
-                if language in ("", "auto")
-                else language,
+                language=self.feed_language(),
             )
             response = await self.app.llm.ask_complete([Message.user(prompt)], tools=None)
             posts = _parse_posts(response.content or "")
@@ -2400,7 +2531,7 @@ class MuseService:
         return {
             "audit": self.app.audit.tail(n),
             "grants": [g.to_dict() for g in s.active_grants()],
-            "tainted": s.tainted,
+            "tainted": s.tainted_any(),
         }
 
     def settings_view(self) -> dict[str, Any]:

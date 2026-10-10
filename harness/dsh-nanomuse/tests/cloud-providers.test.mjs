@@ -12,7 +12,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Readable } from 'node:stream'
 import { Service } from '@deepseek-ai/cordis'
-import NanomuseCloud, { API_PREFIX, LLM_ROW, PROVIDER_ID, TOKEN_REF } from '../lib/cloud.js'
+import NanomuseCloud, { API_PREFIX, LLM_ROW, PROVIDER_ID, STOCK_DEFAULT_MODEL, TOKEN_REF } from '../lib/cloud.js'
 import { CHATGPT_KEY_REF, CHATGPT_PROVIDER, waysOn } from '../lib/providers.js'
 
 // no bundled runtime here: the ChatGPT row says so instead of spawning anything
@@ -58,7 +58,7 @@ function modelsServer(ids) {
   const server = createServer((req, res) => {
     if (req.url?.endsWith('/models')) {
       res.writeHead(200, { 'content-type': 'application/json' })
-      res.end(JSON.stringify({ data: ids.map((id) => ({ id })) }))
+      res.end(JSON.stringify({ data: ids.map((id) => (typeof id === 'string' ? { id } : id)) }))
     } else {
       res.writeHead(404).end()
     }
@@ -257,7 +257,8 @@ test('POST /providers/remove: the row, its credential and the choices that point
     assert.equal((await out.state()).handsProvider, 'bailian')
     assert.equal((await out.api('POST', '/providers/remove', { id: 'nobody' })).status, 404)
     const removed = await out.api('POST', '/providers/remove', { id: 'bailian' })
-    assert.equal(removed.status, 204)
+    assert.equal(removed.status, 200)
+    assert.deepEqual(removed.body, { cloudModelsOn: false }, 'the account was never switched off, so nothing to say')
     const state = await out.state()
     assert.equal(state.providers.bailian, undefined)
     assert.equal(state.handsProvider, undefined)
@@ -279,6 +280,50 @@ test('POST /providers/remove: the row, its credential and the choices that point
   }
 })
 
+test('the thinking level for an own key: the saved row declares the vendor’s documented levels per model, OpenRouter’s from its list; a row saved before the catalogue knew them gets them at the next start', async () => {
+  const out = await cloud()
+  const deepseek = await modelsServer(['deepseek-flash', 'deepseek-v4-pro'])
+  const openrouter = await modelsServer([
+    { id: 'z-ai/glm-5.3', reasoning: { default_effort: 'max', default_enabled: true, mandatory: true, supported_efforts: ['max', 'high', 'low'] } },
+    { id: 'unbiased/pareto-26.10-preview' },
+  ])
+  try {
+    await out.api('POST', '/providers/save', { id: 'deepseek', apiKey: 'sk-secret', baseURL: deepseek.url })
+    const row = out.settings[LLM_ROW].providers.deepseek
+    assert.deepEqual(row.models.map((m) => [m.id, m.reasoningEfforts, m.compat]), [
+      ['deepseek-flash', { low: 'low', high: 'high', max: 'max' }, { thinkingFormat: 'deepseek', supportsReasoningEffort: true }],
+      ['deepseek-v4-pro', { low: 'low', high: 'high', max: 'max' }, { thinkingFormat: 'deepseek', supportsReasoningEffort: true }],
+    ])
+    // never `off`: with no level picked nothing is sent, which is the vendor's default
+    assert.ok(row.models.every((m) => !('off' in m.reasoningEfforts)))
+    // OpenRouter: the levels its own list gives, kept in cloud.json so a restart can write them again
+    await out.api('POST', '/providers/save', { id: 'openrouter', apiKey: 'sk-or', baseURL: openrouter.url, models: 'z-ai/glm-5.3' })
+    const or = out.settings[LLM_ROW].providers.openrouter
+    assert.deepEqual(or.models.map((m) => [m.id, m.reasoningEfforts, m.compat]), [
+      ['z-ai/glm-5.3', { low: 'low', high: 'high', max: 'max' }, { thinkingFormat: 'openrouter' }],
+      ['unbiased/pareto-26.10-preview', undefined, undefined],
+    ])
+    assert.deepEqual((await out.state()).providers.openrouter.models[0].reasoning, { levels: ['low', 'high', 'max'], default: 'max' })
+    // a key saved by an older build: the adapter's row has no levels; the next start writes them
+    const stale = JSON.parse(JSON.stringify(out.settings[LLM_ROW].providers))
+    for (const p of Object.values(stale)) for (const m of p.models) { delete m.reasoningEfforts; delete m.compat }
+    const fake = fakeContext()
+    fake.settings[LLM_ROW].providers = stale
+    const again = new NanomuseCloud(fake.ctx, { baseURL: 'https://relay.invalid', deviceName: 'test-desktop', statePath: out.statePath })
+    again.hub.start = () => undefined
+    again.refresh = async () => again.status()
+    await again[Service.init]()
+    await new Promise((r) => setTimeout(r, 20))
+    assert.deepEqual(fake.settings[LLM_ROW].providers.deepseek.models[0].reasoningEfforts, { low: 'low', high: 'high', max: 'max' })
+    assert.deepEqual(fake.settings[LLM_ROW].providers.openrouter.models[0].compat, { thinkingFormat: 'openrouter' })
+    assert.equal(fake.settings[LLM_ROW].providers.openrouter.models[1].reasoningEfforts, undefined)
+  } finally {
+    await deepseek.close()
+    await openrouter.close()
+    await out.done()
+  }
+})
+
 test('the chosen hands model falls back when its row goes: an own sighted model while signed out, the account’s gui model while signed in', async () => {
   const out = await cloud({ signedIn: true })
   const server = await modelsServer(['qwen3.8-27b'])
@@ -294,6 +339,85 @@ test('the chosen hands model falls back when its row goes: an own sighted model 
     assert.deepEqual(out.svc.capabilities(), ['chat', 'vision', 'image', 'video'])
   } finally {
     await server.close()
+    await out.done()
+  }
+})
+
+test('a removed row never leaves the chat slot on its route (NO_ADAPTER): the slot goes to the account while signed in, else back to the stock default', async () => {
+  // signed out: the custom row was the only chat model; removing it would have left new chats on
+  // `custom`, a route no adapter serves (`no adapter registered for provider "custom"`)
+  const alone = await cloud()
+  const server = await modelsServer(['my-model'])
+  try {
+    await alone.api('POST', '/providers/save', { id: 'custom', apiKey: 'sk-secret', baseURL: server.url, label: 'Gateway', capabilities: ['chat'] })
+    assert.deepEqual(alone.selection.current, { provider: 'custom', model: 'my-model' }, 'the first own key is adopted')
+    assert.equal((await alone.api('POST', '/providers/remove', { id: 'custom' })).status, 200)
+    assert.deepEqual(alone.selection.current, STOCK_DEFAULT_MODEL)
+  } finally {
+    await alone.done()
+  }
+  // signed in: the account's recommended chat model takes the slot
+  const signed = await cloud({ signedIn: true, defaultModel: { provider: 'custom', model: 'my-model' } })
+  try {
+    await signed.api('POST', '/providers/save', { id: 'custom', apiKey: 'sk-secret', baseURL: server.url, label: 'Gateway', capabilities: ['chat'] })
+    await signed.api('POST', '/providers/remove', { id: 'custom' })
+    assert.deepEqual(signed.selection.current, { provider: PROVIDER_ID, model: 'deepseek-v4.1-flash' })
+  } finally {
+    await server.close()
+    await signed.done()
+  }
+})
+
+test('signing out releases the account’s route the same way: to an own row when there is one, else to the stock default', async () => {
+  const server = await modelsServer(['my-model'])
+  const withRow = await cloud({ signedIn: true, defaultModel: { provider: PROVIDER_ID, model: 'deepseek-v4.1-flash' } })
+  try {
+    await withRow.api('POST', '/providers/save', { id: 'custom', apiKey: 'sk-secret', baseURL: server.url, label: 'Gateway', capabilities: ['chat'] })
+    assert.deepEqual(withRow.selection.current, { provider: PROVIDER_ID, model: 'deepseek-v4.1-flash' }, 'a signed-in slot is not moved by a new key')
+    withRow.svc.relay.signOut = async () => undefined
+    await withRow.svc.signOut()
+    assert.deepEqual(withRow.selection.current, { provider: 'custom', model: 'my-model' })
+  } finally {
+    await server.close()
+    await withRow.done()
+  }
+  const bare = await cloud({ signedIn: true, defaultModel: { provider: PROVIDER_ID, model: 'deepseek-v4.1-flash' } })
+  try {
+    bare.svc.relay.signOut = async () => undefined
+    await bare.svc.signOut()
+    assert.deepEqual(bare.selection.current, STOCK_DEFAULT_MODEL)
+  } finally {
+    await bare.done()
+  }
+})
+
+test('an endpoint that lists no models: `no_models` with the key not stored, or the ids the person typed', async () => {
+  const out = await cloud()
+  const silent = await modelsServer([])
+  try {
+    const refused = await out.api('POST', '/providers/save', { id: 'custom', apiKey: 'sk-secret', baseURL: silent.url, label: 'Gateway', capabilities: ['chat'] })
+    assert.equal(refused.status, 400)
+    assert.equal(refused.body.error.code, 'no_models')
+    assert.equal(out.credentials.has('NANOMUSE_KEY_CUSTOM'), false, 'nothing is written before the row can be served')
+    assert.equal(out.settings[LLM_ROW].providers.custom, undefined)
+    const saved = await out.api('POST', '/providers/save', { id: 'custom', apiKey: 'sk-secret', baseURL: silent.url, label: 'Gateway', capabilities: ['chat', 'vision'], models: 'glm-4.7, glm-4.7,  , kimi-k2.5\n' })
+    assert.equal(saved.status, 200)
+    assert.deepEqual(saved.body.models.map((m) => [m.id, m.kind, m.vision]), [['glm-4.7', 'chat', true], ['kimi-k2.5', 'chat', true]])
+    assert.deepEqual(out.settings[LLM_ROW].providers.custom.models.map((m) => m.id), ['glm-4.7', 'kimi-k2.5'])
+    assert.equal(out.credentials.get('NANOMUSE_KEY_CUSTOM'), 'sk-secret')
+    // typed ids come first, the endpoint's after them
+    const listing = await modelsServer(['listed-a', 'glm-4.7'])
+    try {
+      const both = await out.api('POST', '/providers/save', { id: 'custom', apiKey: 'sk-secret', baseURL: listing.url, label: 'Gateway', capabilities: ['chat'], models: ['glm-4.7'] })
+      assert.deepEqual(both.body.models.map((m) => m.id), ['glm-4.7', 'listed-a'])
+    } finally {
+      await listing.close()
+    }
+    // a key with a space in it is refused with its own code, not the sign-in's
+    const spaced = await out.api('POST', '/providers/save', { id: 'custom', apiKey: 'sk se cret', baseURL: silent.url, models: 'm' })
+    assert.equal(spaced.body.error.code, 'key_shape')
+  } finally {
+    await silent.close()
     await out.done()
   }
 })

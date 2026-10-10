@@ -636,6 +636,17 @@ final class NanoMuseLogicTests: XCTestCase {
         starred.starred = true
         XCTAssertFalse(NanoMuseStarGate.due(.exhausted, ledger: starred, policy: policy, now: now.addingTimeInterval(30 * 86_400)))
 
+        // "I already starred" on the first card: nothing shown, no cooldown, every ask left, still nothing
+        var done = NanoMuseStarLedger()
+        done.starred = true
+        var generous = policy
+        generous.cooldownDays = 0
+        generous.maxAsks = 99
+        let later = now.addingTimeInterval(365 * 86_400)
+        for moment: NanoMuseStarMoment in [.signedIn, .tasks(3), .newLook, .exhausted, .daysUsed(7), .goalDone] {
+            XCTAssertFalse(NanoMuseStarGate.due(moment, ledger: done, policy: generous, now: later), "\(moment.key) after I already starred")
+        }
+
         var off = policy
         off.enabled = false
         XCTAssertFalse(NanoMuseStarGate.due(.signedIn, ledger: NanoMuseStarLedger(), policy: off, now: now))
@@ -659,5 +670,25 @@ final class NanoMuseLogicTests: XCTestCase {
         XCTAssertEqual(NanoMuseUpdateCheck.compareVersions("1.4.0-beta.1", "1.4.0-beta.2"), -1)
         XCTAssertEqual(NanoMuseUpdateCheck.compareVersions("1.4.0+7", "1.4.0+9"), 0, "build metadata does not count")
         XCTAssertEqual(NanoMuseUpdateCheck.normalize(" v2.0.1\n"), "2.0.1")
+    }
+
+    func testUpdateIndexReadsTheReleasesList() {
+        // The index as nanomuse.cn/dl/index.json is written: releases newest first, each with a tag.
+        let index: [String: Any] = [
+            "repo": "nano-muse/nanoMuse",
+            "releases": [["tag": "v1.0.0", "name": "nanoMuse 1.0.0", "assets": [String]()], ["tag": "v0.1.41"]],
+        ]
+        let found = NanoMuseUpdateCheck.parseIndex(index)
+        XCTAssertEqual(found?.version, "v1.0.0", "the newest release's tag, as Android reads it")
+        XCTAssertEqual(found?.page, NanoMuseUpdateCheck.downloadPage, "a tap leads to the download page")
+        XCTAssertEqual(NanoMuseUpdateCheck.parseIndex(["releases": [["tag": ""], ["tag": "v0.9.0"]]])?.version, "v0.9.0", "an empty tag is skipped")
+        XCTAssertNil(NanoMuseUpdateCheck.parseIndex(["repo": "nano-muse/nanoMuse"]), "no releases, no answer")
+        XCTAssertNil(NanoMuseUpdateCheck.parseIndex(["releases": [[String: Any]]()]))
+        // The older shapes still read.
+        XCTAssertEqual(NanoMuseUpdateCheck.parseIndex(["ios": ["version": "1.2.0", "page": "https://example.invalid/r"]]), NanoMuseUpdateCheck.Found(version: "1.2.0", page: "https://example.invalid/r"))
+        XCTAssertEqual(NanoMuseUpdateCheck.parseIndex(["latest": "1.1.0"])?.page, NanoMuseUpdateCheck.downloadPage)
+        // GitHub's release object.
+        XCTAssertEqual(NanoMuseUpdateCheck.parseGitHubLatest(["tag_name": "v1.0.0", "html_url": "https://example.invalid/tag"]), NanoMuseUpdateCheck.Found(version: "v1.0.0", page: "https://example.invalid/tag"))
+        XCTAssertNil(NanoMuseUpdateCheck.parseGitHubLatest(["message": "Not Found"]))
     }
 }

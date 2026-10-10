@@ -38,7 +38,7 @@ from .nudges import merge as nudges_merge
 from .nudges import validate as nudges_validate
 from .providers import exhausted_key_line, guidance
 from .providers import provider as catalogue_provider
-from .senders import CodeSender, SendError, make_sender
+from .senders import CodeSender, LogSender, SendError, make_sender
 
 log = logging.getLogger("nanomuse_cloud")
 
@@ -283,6 +283,16 @@ def _sha256(s: str) -> str:
     return hashlib.sha256(s.encode()).hexdigest()
 
 
+def _code_hash(key: bytes, code: str) -> str:
+    """A sign-in code is six digits, so hashing it plainly is a lookup table: whoever can read
+    the database tries all 1,000,000 values in a moment and gets a live code back. Keying the
+    hash with the relay's own secret (the same trick as an identifier hash) makes that need the
+    secret too. An API key stays a plain hash: 240 random bits are nobody's lookup table.
+    A code stored by an older relay does not verify, so one that was in the air when the relay
+    updated has to be asked for again."""
+    return hmac.new(key, code.encode(), hashlib.sha256).hexdigest()
+
+
 class InFlight:
     """The requests an account has under way: how many (at most `limit`), and what each is
     expected to cost. The allowance check counts these reservations as spent, so several
@@ -358,6 +368,13 @@ class Cloud:
         settings = self.s
         self.in_flight = InFlight(settings.max_in_flight, ttl_s=settings.upstream_timeout_s + 120)
         self.sender = sender or make_sender(settings)
+        if settings.dev_mode and not isinstance(self.sender, LogSender):
+            # `hmac_key` falls back to a published development constant when CLOUD_SECRET is
+            # absent, which is only safe while codes stay in the log: with a sender that really
+            # sends, every identifier would be hashable — the member list readable, a live code
+            # recoverable — by whoever holds the database alone. `__main__` exits on this for the
+            # command line; a relay built here is refused for every other way of starting one.
+            raise RuntimeError("CLOUD_SECRET is not set; a relay that sends codes (CODE_SENDER != log) must have one")
         self.crypto = IdentifierCrypto(settings.identifier_key)
         # 0.22: the operator's switches and thresholds (settings table, applied at once)
         self.controls = Controls(self.db, settings)
@@ -687,7 +704,7 @@ class Cloud:
         # The reviewer's code is the fixed one and goes nowhere: the row is written like
         # anyone's, so the lifetime, the attempt limit and the rate limits are the same.
         code = self.s.review_code.strip() if review else f"{secrets.randbelow(1_000_000):06d}"
-        self.db.insert_code(ident.hash(self.s.hmac_key), _sha256(code), ip, self.s.code_ttl_s)
+        self.db.insert_code(ident.hash(self.s.hmac_key), _code_hash(self.s.hmac_key, code), ip, self.s.code_ttl_s)
         if review:
             log.info("review sign-in: a code request for the reviewer's address; nothing sent")
             return
@@ -709,7 +726,7 @@ class Cloud:
         if attempts > self.s.code_max_attempts:
             self.db.consume_code(int(row["id"]))
             raise CloudError(400, "code_expired", "Too many tries; ask for a new code")
-        if not secrets.compare_digest(str(row["code_hash"]).encode(), _sha256(code.strip()).encode()):
+        if not secrets.compare_digest(str(row["code_hash"]).encode(), _code_hash(self.s.hmac_key, code.strip()).encode()):
             raise CloudError(400, "code_wrong", "That code is not right")
         self.db.consume_code(int(row["id"]))
         return self.sign_in(ident, device, "code", invite)
@@ -1159,7 +1176,7 @@ class Cloud:
         bonus = f"+¥{self.s.invite_bonus_cny:g} for each of you"
         key = exhausted_key_line(region)
         message = (
-            f"Your free allowance ({grant}) is used up. Two ways on: {key}, or invite a friend ({bonus}). "
+            f"Your free allowance ({grant}) is used up. Three ways on: {key}, or invite a friend ({bonus}). "
             "Your sign-in and your devices keep working either way."
         )
         return CloudError(
@@ -1509,13 +1526,28 @@ class Cloud:
         self.db.charge(caller.account_id, "image", model.id, 0, 0, charged, request_id, cost_uy=cost)
         return charged
 
-    def charge_video(self, caller: Caller, model: ModelSpec, request_id: str, cost_uy: int = 0) -> int:
-        """One accepted task = one clip; the provider bills per output second, so
-        `per_clip` is set for the short clips the app asks for and the money
-        was priced from the seconds asked for when the task was submitted."""
-        charged = model.per_clip
-        self.db.charge(caller.account_id, "video", model.id, 0, 0, charged, request_id, cost_uy=cost_uy)
-        return charged
+    def settle_video_task(self, task: Any, status: str | None) -> int | None:
+        """The provider's word on a clip, from the app's poll or from the relay's own check
+        (0.24). One accepted task = one clip (`per_clip`), the money priced from the seconds
+        asked for when the task was submitted. The row remembers the status, and the first SUCCEEDED charges the clip at the
+        price fixed when it was submitted. Idempotent: `mark_video_charged` flips once, so a
+        poll after the relay settled a task (or the other way round) charges nothing more.
+        Returns what was charged (micro-yuan), 0 when a SUCCEEDED task's model is gone from
+        the menu, None when nothing was charged."""
+        task_id = str(task["task_id"])
+        if status and status != task["status"]:
+            self.db.set_video_status(task_id, str(status))
+        if status != "SUCCEEDED" or not self.db.mark_video_charged(task_id):
+            return None
+        model_id = str(task["model"])
+        spec = self.s.model(model_id)
+        if spec is None or spec.kind != "video":
+            spec = self.s.unlisted_model(model_id, "video")  # a member's own pick
+        if spec is None:
+            return 0  # a model gone from the menu since the task was submitted
+        account_id = str(task["account_id"])
+        self.db.charge(account_id, "video", spec.id, 0, 0, spec.per_clip, task_id[:16], cost_uy=int(task["cost_uy"] or 0))
+        return spec.per_clip
 
     def note(self, account_id: str, kind: str, detail: str = "") -> None:
         """An event on the account's timeline (never message content)."""
@@ -2175,6 +2207,7 @@ class Cloud:
                 "sign_in_failures": counts.get("sign_in.failed", 0),
                 "budget_refusals": counts.get("budget.refused", 0),
                 "upstream_errors": counts.get("upstream.error", 0),
+                "content_rejected": counts.get("content.rejected", 0),
                 "calls": counts.get("call.ended", 0),
             },
             "top_accounts": top,
@@ -2213,6 +2246,7 @@ class Cloud:
                     "calls": e.get("call.ended", 0),
                     "budget_refusals": e.get("budget.refused", 0),
                     "upstream_errors": e.get("upstream.error", 0),
+                    "content_rejected": e.get("content.rejected", 0),
                 }
             )
         devices = [{"kind": r["kind"], "os": r["os"] or "", "count": int(r["n"])} for r in self.db.devices_by_kind_os()]

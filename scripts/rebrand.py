@@ -45,8 +45,8 @@ IOS = ROOT / "android" / "src" / "ios"
 
 APP_ID = "io.github.nanomuse.app"
 NAME = "nanoMuse"
-VERSION_NAME = "0.1.41"
-VERSION_CODE = 42
+VERSION_NAME = "1.0.1"
+VERSION_CODE = 44
 REPO = "nano-muse/nanoMuse"
 REPO_URL = f"https://github.com/{REPO}"
 PRIVACY_URL = f"{REPO_URL}/blob/main/docs/privacy.md"
@@ -152,6 +152,18 @@ def links() -> None:
             (r'"https://openminis\.github\.io/privacy-policy\.html"', f'"{PRIVACY_URL}"'),
             (r'"https://github\.com/OpenMinis/OpenMinis/issues/new"', f'"{REPO_URL}/issues/new"'),
         ],
+    )
+
+
+SYSTEM_SCHEME = "nanomuse"  # what the system knows the app by; inside, links stay minis://
+
+
+def schemes() -> None:
+    """The scheme registered with the system is ours, so a phone with OpenMinis installed too
+    never has two apps claiming `minis://`; the in-app vocabulary (`minis://…`) does not change."""
+    edit(
+        MAIN / "AndroidManifest.xml",
+        [(r'<data android:scheme="minis" />', f'<data android:scheme="{SYSTEM_SCHEME}" />')],
     )
 
 
@@ -324,13 +336,29 @@ def ios_ids() -> None:
     )
 
 
+def ios_schemes() -> None:
+    """Same as `schemes()` for the phone's other half: Info.plist registers `nanomuse` and
+    `nanomuse-mcp`, the share extension opens `nanomuse://share`; `minis://` stays in-app."""
+    edit(
+        IOS / "Info.plist",
+        [
+            (r"<string>minis</string>", f"<string>{SYSTEM_SCHEME}</string>"),
+            (r"<string>minis-mcp</string>", f"<string>{SYSTEM_SCHEME}-mcp</string>"),
+        ],
+    )
+    edit(
+        IOS / "ShareExtension" / "ShareViewController.swift",
+        [(r"minis://share", f"{SYSTEM_SCHEME}://share")],
+    )
+
+
 def ios_project() -> None:
     pbx = IOS / "Minis.xcodeproj" / "project.pbxproj"
     edit(
         pbx,
         [
-            (r"MARKETING_VERSION = 1\.\d+;", f"MARKETING_VERSION = {VERSION_NAME};"),
-            (r"MARKETING_VERSION = 0\.\d+\.\d+;", f"MARKETING_VERSION = {VERSION_NAME};"),
+            # upstream's `1.13` and every version of ours before this one
+            (r"MARKETING_VERSION = \d+(?:\.\d+)+;", f"MARKETING_VERSION = {VERSION_NAME};"),
             (r"CURRENT_PROJECT_VERSION = \d+;", f"CURRENT_PROJECT_VERSION = {VERSION_CODE};"),
             (
                 r'INFOPLIST_KEY_CFBundleDisplayName = "Share to Minis";',
@@ -486,6 +514,7 @@ def ios() -> None:
     if not IOS.is_dir():
         return
     ios_ids()
+    ios_schemes()
     ios_project()
     ios_product_name()
     ios_links()
@@ -498,7 +527,9 @@ def ios_check() -> int:
         return 0
     problems = 0
     leftovers = re.compile(
-        r"com\.openminis\.(app|Minis)|openminis\.github\.io|MARKETING_VERSION = 1\."
+        r"com\.openminis\.(app|Minis)|openminis\.github\.io|MARKETING_VERSION = (?!"
+        + re.escape(VERSION_NAME)
+        + r";)"
     )
     for path in ios_files(".swift", ".plist", ".entitlements", ".pbxproj"):
         for i, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
@@ -509,6 +540,14 @@ def ios_check() -> int:
         if path.name != "PrivacyInfo.xcprivacy" and WORD.search(path.read_text(encoding="utf-8")):
             print(f"  ! Minis left in {path.relative_to(ROOT)}")
             problems += 1
+    plist = (IOS / "Info.plist").read_text(encoding="utf-8")
+    if re.search(r"<string>minis(-mcp)?</string>", plist):
+        print("  ! Info.plist still registers upstream's URL scheme")
+        problems += 1
+    share = (IOS / "ShareExtension" / "ShareViewController.swift").read_text(encoding="utf-8")
+    if "minis://share" in share:
+        print("  ! the share extension still opens minis://share")
+        problems += 1
     return problems
 
 
@@ -526,6 +565,9 @@ def check() -> int:
             if leftovers.search(line):
                 print(f"  ! {path.relative_to(ROOT)}:{i}: {line.strip()[:80]}")
                 problems += 1
+    if 'android:scheme="minis"' in (MAIN / "AndroidManifest.xml").read_text(encoding="utf-8"):
+        print("  ! AndroidManifest.xml still registers upstream's URL scheme")
+        problems += 1
     return problems
 
 
@@ -537,6 +579,7 @@ def main() -> int:
     product_name()
     soul_defaults()
     links()
+    schemes()
     colours()
     notification_icons()
     notification_faces()

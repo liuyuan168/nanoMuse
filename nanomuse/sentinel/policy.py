@@ -1,13 +1,15 @@
 """Sentinel policy engine – decides *allow / ask / deny* for a tool call.
 
-Evaluation order (first hit wins for 1–4, 5 can only escalate):
+Evaluation order (first hit wins for 1–4, 5 and 6 are then checked against
+every decision and can only escalate it to ASK):
 
 1. ``deny_tools``
 2. explicit ``[[sentinel.rules]]`` (tool glob + argument globs)
 3. ``always_allow_tools`` / ``always_ask_tools``
 4. risk level × mode  (``ask`` / ``strict`` / ``auto``)
 5. taint tracking: after private data has been read, network egress to a
-   destination that is not on ``egress_allowlist`` requires approval.
+   destination that is not on ``egress_allowlist`` requires approval,
+   whatever step 1–4 said and whatever the mode.
 """
 
 from __future__ import annotations
@@ -32,6 +34,9 @@ class Decision(str, Enum):
 class PolicyResult:
     decision: Decision
     reasons: list[str] = field(default_factory=list)
+    # the ASK came from private data read earlier in this conversation: a mode that skips
+    # questions must not wave it through, any more than it waves a warning through
+    tainted_ask: bool = False
 
 
 def _match_any(name: str, patterns: list[str]) -> bool:
@@ -85,6 +90,7 @@ class Policy:
 
         decision: Decision | None = None
         from_rule = False
+        tainted_ask = False
 
         # 2. explicit rules
         for rule in s.rules:
@@ -116,10 +122,12 @@ class Policy:
             if decision == Decision.ASK:
                 reasons.append(f"risk level is '{risk.value}' (mode={s.mode})")
 
-        # 5. taint tracking – can only escalate ALLOW → ASK
+        # 5. taint tracking – can only escalate to ASK, whatever set the decision so far
+        #    (mode, always_allow_tools, always_ask_tools or a rule): an ASK it taints
+        #    carries `tainted_ask`, so a mode that skips questions does not wave it
+        #    through (step 6's warnings work the same way)
         if (
-            decision == Decision.ALLOW
-            and s.taint_tracking
+            s.taint_tracking
             and tainted
             and assessment.egress
             and not assessment.egress_configured
@@ -127,8 +135,9 @@ class Policy:
         ):
             target = assessment.egress_target or "an unknown destination"
             decision = Decision.ASK
+            tainted_ask = True
             reasons.append(
-                f"private data was read earlier in this session and '{tool}' can send data to "
+                f"private data was read earlier in this conversation and '{tool}' can send data to "
                 f"{target}, which is not on sentinel.egress_allowlist"
             )
 
@@ -140,7 +149,7 @@ class Policy:
             if decision == Decision.ALLOW and not from_rule:
                 decision = Decision.ASK
             reasons.extend(assessment.warnings)
-        return PolicyResult(decision, reasons)
+        return PolicyResult(decision, reasons, tainted_ask)
 
 
 __all__ = ["Decision", "Policy", "PolicyResult", "host_allowed"]

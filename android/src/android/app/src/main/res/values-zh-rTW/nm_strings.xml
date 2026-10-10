@@ -20,6 +20,7 @@
     <string name="nm_star_title">GitHub 上的一顆 Star 幫得上忙</string>
     <string name="nm_star_action">去 GitHub 點亮 Star</string>
     <string name="nm_star_later">以後再說</string>
+    <string name="nm_star_done">已經點過了</string>
     <string name="nm_star_signed_in">歡迎加入。nanoMuse 免費、開源、非營利，做的是一個屬於每個人的個人智慧體。如果你認同，GitHub 上的一顆 Star 能讓下一個人也找到這裡。</string>
     <plurals name="nm_star_tasks">
         <item quantity="other">已經一起完成 %1$d 個任務。如果 nanoMuse 幫上了忙，到 GitHub 點一顆 Star，下一個人也能找到它。</item>
@@ -542,7 +543,7 @@
     <string name="nm_hands_fx_open">開啟 %1$s</string>
     <string name="nm_hands_fx_wait">等 %1$d 秒</string>
     <!-- the approval card -->
-    <string name="nm_risk_desc_screen">%1$s 想在%3$s裡點「%2$s」。</string>
+    <string name="nm_risk_desc_screen">%1$s 想在 %3$s 裡點「%2$s」。</string>
     <string name="nm_risk_preview_screen">螢幕上</string>
 
     <!-- Reach (0.1.13): the phone drives your computer -->
@@ -595,7 +596,7 @@
     <string name="nm_welcome_feat_hands">Hands：替你操作手機</string>
     <string name="nm_welcome_feat_hands_sub">訂車票、點外送、在應用程式裡查東西；你全程看著，隨時可以停</string>
     <string name="nm_welcome_feat_reach">Reach：從手機使用你的電腦</string>
-    <string name="nm_welcome_feat_reach_sub">配對一台 Mac、Windows 或 Linux 電腦，在手機上派工作給它</string>
+    <string name="nm_welcome_feat_reach_sub">在 Mac、Windows 或 Linux 電腦上裝好 nanoMuse 桌面版，用同一個帳號登入，就能在手機上派工作給它</string>
     <string name="nm_welcome_notice">nanoMuse 是非營利的開源社群專案，永久免費。模型自帶一份由開發者承擔的免費額度，用完換自己的 key。資料不會出售；伺服器保存什麼寫在隱私權政策裡，「設定 → 資料控制」由你決定。</string>
     <string name="nm_welcome_hands_title">讓它替你操作手機</string>
     <string name="nm_welcome_hands_sub">開啟兩項權限後，它就能替你打開應用程式、點按和輸入。螢幕上始終有顯示目前步驟和「停止」的膠囊；登入、密碼和驗證碼永遠由你自己來。</string>
@@ -626,8 +627,8 @@
     <string name="nm_cloud_server_now">伺服器：%1$s</string>
     <string name="nm_cloud_server_ok">%1$s 已回應：中繼服務 %2$s。</string>
     <string name="nm_cloud_server_bad_url">請填寫伺服器位址，例如 https://relay.example.org。</string>
-    <string name="nm_cloud_server_https">自家網路之外的伺服器請用 https。內網位址（10.x、192.168.x、172.16–31.x、localhost、.local 或 .ts.net 網域）可以用 http。</string>
-    <string name="nm_lan_only_https">明文 http:// 只能用於你自己網路裡的位址（10.x、172.16–31.x、192.168.x、.local 名字）；%1$s 請用 https://。</string>
+    <string name="nm_cloud_server_https">自家網路之外的伺服器請用 https。內網位址（10.x、192.168.x、172.16-31.x、localhost、.local 或 .ts.net 網域）可以用 http。</string>
+    <string name="nm_lan_only_https">明文 http:// 只能用於你自己網路裡的位址（10.x、172.16-31.x、192.168.x、.local 名字）；%1$s 請用 https://。</string>
     <string name="nm_cloud_server_unreachable">%1$s 沒有中繼服務回應。請檢查位址，並確認服務已在執行。</string>
     <string name="nm_cloud_server_default">改回 nanoMuse Cloud</string>
     <string name="nm_cloud_server_row">伺服器</string>
@@ -682,6 +683,7 @@
     <string name="nm_cloud_err_password_weak">這個密碼太好猜了。</string>
     <string name="nm_cloud_err_signup_closed">這台中繼暫時關閉了註冊。已有的帳號仍可登入。</string>
     <string name="nm_cloud_err_too_large">這則訊息對模型來說太長了。縮短一些、去掉幾個附件，或者新開一個對話。</string>
+    <string name="nm_cloud_err_content_rejected">模型服務商的內容審核沒有放行這次請求。換個說法試試；如果反覆出現，就新開一個對話，被攔下的可能是對話裡更早的內容。</string>
     <string name="nm_cloud_err_provider_busy">模型服務商現在很忙，稍後再試。</string>
     <string name="nm_cloud_err_provider_busy_wait">模型服務商現在很忙，請在 %1$s 後再試。</string>
     <string name="nm_cloud_err_model_not_offered">nanoMuse Cloud 不再提供這個模型。到「設定 → nanoMuse Cloud」換一個。</string>
@@ -940,8 +942,8 @@
     <string name="nm_connectors_own_row">MCP 伺服器</string>
     <string name="nm_connectors_own_sub">按位址或指令新增伺服器，或匯入 JSON 設定。</string>
     <string name="nm_connectors_elsewhere_title">你的其他裝置上</string>
-    <string name="nm_connectors_elsewhere_sign_in">已在%1$s上連接；在這支手機上登入一次，這裡也能用。</string>
-    <string name="nm_connectors_elsewhere_only">已在%1$s上連接。不在這支手機的目錄裡；需要的話到「你自己的伺服器」裡新增。</string>
+    <string name="nm_connectors_elsewhere_sign_in">已在 %1$s 上連接；在這支手機上登入一次，這裡也能用。</string>
+    <string name="nm_connectors_elsewhere_only">已在 %1$s 上連接。不在這支手機的目錄裡；需要的話到「你自己的伺服器」裡新增。</string>
     <string name="nm_connectors_elsewhere_device">另一台裝置</string>
     <string name="nm_connectors_own_n">已有 %1$d 個 · 按位址、指令或 JSON 新增</string>
     <string name="nm_connectors_how_client">%1$s 不支援自動註冊應用程式，所以需要一次性的小設定：在它的開發者設定裡建立一個你自己的 OAuth 應用程式，回呼位址填下面這個，然後把應用程式的用戶端 ID 貼到這裡（如有用戶端密鑰也一併填上）。兩者都只保存在這支手機上。</string>
@@ -1053,6 +1055,8 @@
     <string name="nm_models_cloud_switch">使用 nanoMuse Cloud 模型</string>
     <string name="nm_models_cloud_on_sub">nanoMuse Cloud 是下面各項的來源之一，在它上面執行的內容計入你的額度。</string>
     <string name="nm_models_cloud_off_sub">關閉後，除非你點「這次改用 nanoMuse Cloud」，否則不會有任何內容在 nanoMuse Cloud 上執行。帳號保持登入，用於同步和你的裝置。</string>
+    <string name="nm_models_cloud_off_refused">先新增一個自己的服務商；關掉 nanoMuse Cloud 後沒有別的模型能回答。</string>
+    <string name="nm_chat_no_model">現在沒有能回答的模型。請在「設定 › 模型」裡選一個。</string>
     <string name="nm_cloud_provider_no_delete">這個提供商就是你的 nanoMuse Cloud 帳號。要停用它的模型，請在上面關閉開關；要登出，請開啟「設定 › nanoMuse Cloud」。</string>
     <string name="nm_welcome_own_key">改用自己的 API key</string>
     <string name="nm_useit_title">用它來做什麼</string>

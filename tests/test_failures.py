@@ -37,6 +37,21 @@ def test_relay_refusals_are_named_by_code():
     assert describe_failure(exc)[0] == "provider"
 
 
+def test_the_showcase_gateways_shares_are_named():
+    """The showcase's gateway answers 429 ``session_budget`` / ``daily_budget`` when a demo
+    Muse's share of the model is used up; that is not a provider rate-limiting a key."""
+    exc = _status_error(
+        openai.RateLimitError, 429, {"code": "session_budget", "message": "used up"}
+    )
+    code, text = describe_failure(exc)
+    assert code == "allowance" and "this visit" in text and "rate-limit" not in text
+    exc = _status_error(openai.RateLimitError, 429, {"code": "daily_budget", "message": "today"})
+    code, text = describe_failure(exc)
+    assert code == "allowance" and "tomorrow" in text
+    # the notice carries no allowance card: there is no account behind a demo Muse
+    assert "allowance" not in failure_notice(exc, "main")
+
+
 def test_an_exhausted_allowance_carries_the_ways_on():
     """relay 0.9: ``429 allowance_exhausted`` says what is left and where an invitation
     (+¥5 for both sides) and one's own key lead; the notice passes that on for the card.
@@ -203,17 +218,22 @@ def test_timeline_writes_are_coalesced_on_a_loop_and_immediate_off_one(tmp_path)
     off.add({"type": "user", "text": "now"})
     assert json.loads(path.read_text("utf-8"))["events"][0]["text"] == "now"
 
+    def written() -> list[str]:
+        # the texts on disk, not a substring of the file: an event id is random hex and can
+        # contain "e19" by chance, which made the first version of this test flaky
+        return [e["text"] for e in json.loads(path.read_text("utf-8"))["events"]]
+
     async def burst() -> None:
         tl = Timeline("t", path)
         for i in range(20):
             tl.add({"type": "user", "text": f"e{i}"})
         # nothing written yet: the burst is still being coalesced
-        assert "e19" not in path.read_text("utf-8")
+        assert "e19" not in written()
         await asyncio.sleep(0.8)
-        assert "e19" in path.read_text("utf-8")
+        assert "e19" in written()
         tl.add({"type": "user", "text": "last"})
         tl.flush()  # shutdown path: written at once, the scheduled write dropped
-        assert "last" in path.read_text("utf-8")
+        assert "last" in written()
 
     asyncio.run(burst())
 

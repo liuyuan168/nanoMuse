@@ -50,13 +50,13 @@ import { ProfileStore, type Profile } from './profile.ts'
 import { cloudOffFailure, relayFailure, transportFailure, type RelayRefusal } from './refusals.ts'
 import { Relay, RelayError, type Account, type Estimate, type Invite, type ProfileWrite, type RelayModel, type SignIn } from './relay.ts'
 import { TaskRunner, textOf } from './task.ts'
-import { Trajectory, type StepAction, type TrajectoryView } from './trajectory.ts'
+import { SCREEN_RUN_IDLE_MS, ScreenRuns, Trajectory, type ScreenRun, type StepAction, type TrajectoryView } from './trajectory.ts'
 import { RemoteStore, SyncEngine, SyncRelay, type RemoteLine, type SessionInfo, type SessionLine, type SyncState } from './sync.ts'
 import { AvatarMotion, ANIMATED, type MotionMood, type MotionView } from './motion.ts'
 import { DEFAULT_VIDEO_MODEL, hostOf, KNOWN_DASHSCOPE_MODELS, looksLikeVideoModel, probe as probeVideoModel, speaksDashScope, type VideoEndpoint } from './video.ts'
 import { editImage as ownEditImage, generateImage as ownGenerateImage, imageShapeOf, type ImageEndpoint } from './images.ts'
 import { checkMove, checkScreenshot, displayInfo, isBlack, runtimeInfo, screenHead, type MoveCheck, type RuntimeInfo, type ScreenshotCheck } from './hands-check.ts'
-import { apiOf, baseUrlFor, CAPABILITIES, capabilitiesForAuth, capabilitiesOf, CHATGPT_KEY_REF, CHATGPT_PROVIDER, ChatGptDesk, keyRefFor, listModels, loadCatalogue, modelsOf, ownProviderRow, regionOf, type Capability, type ChatGptState, type LoginView, type OwnModel, type OwnProvider, type ProviderEntry, type Region } from './providers.ts'
+import { apiOf, baseUrlFor, CAPABILITIES, capabilitiesForAuth, capabilitiesOf, CHATGPT_KEY_REF, CHATGPT_PROVIDER, ChatGptDesk, keyRefFor, listModelRows, listModels, loadCatalogue, modelsOf, ownProviderRow, parseModelReasoning, regionOf, typedModelIds, type Capability, type ChatGptState, type LoginView, type OwnModel, type OwnProvider, type ProviderEntry, type Region } from './providers.ts'
 
 declare module '@deepseek-ai/cordis' {
   interface Context {
@@ -70,6 +70,10 @@ export const TOKEN_REF = 'NANOMUSE_CLOUD_TOKEN'
 export const PROVIDER_ID = 'nanomuse'
 /** The profile row the Models page edits too. */
 export const LLM_ROW = 'llm-pi-ai'
+/** The `409 chat_on_cloud` body's sentence (the web client shows its own words for the code). */
+export const CHAT_ON_CLOUD_MESSAGE = 'Add a provider of your own first; with nanoMuse Cloud off, nothing else could answer.'
+/** dsh-base's stock chat default (its `agent-default-model` row): what `adoptOwnDefault` and `adoptDefaultModel` read as "nothing chosen yet". */
+export const STOCK_DEFAULT_MODEL = { provider: 'deepseek-official', model: 'deepseek-flash' } as const
 /**
  * The image budget of one request through the relay (`dsh-llm-pi-ai` profile keys): the relay
  * refuses a body past 6 MiB (413 `too_large`), so the base64 images of a request are held to
@@ -249,7 +253,12 @@ export interface LiveState {
   cloud: { signedIn: boolean; hint: string }
   profile: Profile
   hub: HubState
-  hands: { calls: HandsCall[]; steps: number }
+  /**
+   * The calls in flight, the step count, and `run`: the session that has this computer's
+   * screen, from its first `computer_*` call to its turn's end (null between runs). The
+   * shell's glow and capsule follow `run`, so they stay up while the model thinks.
+   */
+  hands: { calls: HandsCall[]; steps: number; run: ScreenRun | null }
   stage: StageState
   notices: Notice[]
   /** Questions the agent asked before a step, open right now (C2); the stage answers them too. */
@@ -462,7 +471,10 @@ function ownProvidersOf(raw: Record<string, unknown>): Record<string, OwnProvide
       baseURL: p.baseURL,
       keyRef: typeof p.keyRef === 'string' ? p.keyRef : '',
       capabilities: p.capabilities.filter((c): c is Capability => (CAPABILITIES as readonly string[]).includes(c)),
-      models: Array.isArray(p.models) ? p.models.filter((m): m is OwnModel => Boolean(m) && typeof m.id === 'string').map((m) => ({ id: m.id, name: typeof m.name === 'string' && m.name ? m.name : m.id, vision: m.vision === true, kind: m.kind === 'image' || m.kind === 'video' ? m.kind : 'chat' })) : [],
+      models: Array.isArray(p.models) ? p.models.filter((m): m is OwnModel => Boolean(m) && typeof m.id === 'string').map((m) => {
+        const reasoning = parseModelReasoning(m.reasoning)
+        return { id: m.id, name: typeof m.name === 'string' && m.name ? m.name : m.id, vision: m.vision === true, kind: m.kind === 'image' || m.kind === 'video' ? m.kind : 'chat', ...(reasoning ? { reasoning } : {}) }
+      }) : [],
       at: Number(p.at) || 0,
     }
   }
@@ -491,7 +503,15 @@ function canonical(value: unknown): string {
   return JSON.stringify(value)
 }
 
-/** The runtime's "Not done — …" refusal in an MCP error result, or `undefined` for any other failure. */
+/**
+ * The runtime's refusal in an MCP error result, or `undefined` for any other failure.
+ * The mark it is recognised by: `nanomuse mcp` said "Not done — " until 1.0 and has said
+ * "Not done: " since (the runtime's sentences carry no dashes, `tests/test_voice.py`); this
+ * plugin's own declines say "Not done: " too. Both marks are the same refusal, and the old
+ * one stays recognised for a runtime that predates 1.0.
+ */
+const REFUSAL_MARKS = ['Not done: ', 'Not done — '] as const
+
 export function refusalOf(result: ToolExecutionResult): string | undefined {
   const texts: string[] = []
   for (const block of result.content ?? []) {
@@ -500,10 +520,13 @@ export function refusalOf(result: ToolExecutionResult): string | undefined {
   }
   const message = (result.error as { message?: unknown } | undefined)?.message
   if (typeof message === 'string') texts.push(message)
-  const hit = texts.find((t) => t.includes('Not done — '))
-  if (!hit) return undefined
-  const start = hit.indexOf('Not done — ')
-  return hit.slice(start + 'Not done — '.length).trim()
+  for (const text of texts) {
+    const hit = REFUSAL_MARKS.map((mark) => ({ mark, at: text.indexOf(mark) }))
+      .filter(({ at }) => at >= 0)
+      .sort((a, b) => a.at - b.at)[0]
+    if (hit) return text.slice(hit.at + hit.mark.length).trim()
+  }
+  return undefined
 }
 
 /** Every text of a tool result's error, joined: what the runtime said went wrong. */
@@ -518,8 +541,9 @@ function errorText(result: ToolExecutionResult): string {
   return texts.join('\n')
 }
 
-function declined(step: string, why: string): ToolExecutionResult {
-  const text = `Not done — ${step}. The person did not approve this step on their permission card (${why}); do not retry it. Ask them what to do instead, or carry on without it.`
+/** The plugin's own refusal of a step the person declined on the card: the same mark as the runtime's. */
+export function declined(step: string, why: string): ToolExecutionResult {
+  const text = `Not done: ${step}. The person did not approve this step on their permission card (${why}); do not retry it. Ask them what to do instead, or carry on without it.`
   return { isError: true, error: { message: text, info: { name: 'HandsDeclined', code: 'REJECTED' } }, content: [{ type: 'text', text }] }
 }
 
@@ -550,6 +574,9 @@ export default class NanomuseCloud extends Service {
   private stage: StageState = NO_STAGE
   /** The hands' runs, step by step, with their pictures (0.1.40). */
   private readonly trajectory = new Trajectory()
+  /** Which session has this computer's screen right now, for the glow and the capsule. */
+  private readonly screenRuns = new ScreenRuns()
+  private runTimer: NodeJS.Timeout | undefined
   private stageTimer: NodeJS.Timeout | undefined
   private signedInCache = false
   /** When the account was last re-read for the allowance (after a turn, after a refusal). */
@@ -633,6 +660,8 @@ export default class NanomuseCloud extends Service {
     }
     this.catalogue = await loadCatalogue()
     if (!this.catalogue.length) this.ctx.logger.warn('nanomuse: assets/providers.json missing or empty; the own-key step lists nothing')
+    // Keys saved before the catalogue learned a vendor's thinking levels get them on this start.
+    this.refreshOwnRows()
     await this.profile.load()
     this.profile.onChange(() => this.broadcast())
     // The face's clips follow the face (C3): a face drawn here or pulled from the account drops the
@@ -844,15 +873,23 @@ export default class NanomuseCloud extends Service {
         }
       })
     })
-    // The trajectory (0.1.40): the model's words before a step, and the turn's end closing the run.
+    // The trajectory (0.1.40): the model's words before a step, and the turn's end closing the
+    // run; the same end lets go of the screen (the glow and the capsule outside the window).
     this.ctx.effect(
       () =>
         this.ctx.on('session/event', (session: Session, event: SessionEvent) => {
           const id = String(session.id)
           if (event.type === 'assistant/message') this.trajectory.said(id, textOf(event.data.message.content))
-          else if (event.type === 'turn/end' && this.trajectory.running(id)) {
-            this.trajectory.turnEnded(id)
-            this.broadcast()
+          else if (event.type === 'turn/end') {
+            let changed = this.screenRuns.turnEnded(id)
+            if (this.trajectory.running(id)) {
+              this.trajectory.turnEnded(id)
+              changed = true
+            }
+            if (changed) {
+              this.armRunSweep()
+              this.broadcast()
+            }
           }
         }),
       'nanomuse cloud: trajectory',
@@ -976,16 +1013,17 @@ export default class NanomuseCloud extends Service {
   /**
    * Switch the account's models on or off as a source (the phones' *Use nanoMuse Cloud models*).
    * Off while new chats answer through the account: the chat slot moves to the first own chat
-   * model, when there is one; the hands' environment follows.
+   * model, when there is one; the hands' environment follows. With no own chat model the
+   * switch is refused (`409 chat_on_cloud`, the same rule on every client): nothing else
+   * could answer, so the state does not change and the switch stays on.
    */
   async setCloudModels(on: boolean): Promise<void> {
     if (on === !this.state.cloudModelsOff) return
+    const own = !on && this.chatChoice().provider === PROVIDER_ID ? this.ownChatChoice() : undefined
+    if (!on && this.chatChoice().provider === PROVIDER_ID && !own) throw new RelayError(409, 'chat_on_cloud', CHAT_ON_CLOUD_MESSAGE)
     const { cloudModelsOff: _off, ...rest } = this.state
     this.state = on ? rest : { ...rest, cloudModelsOff: true }
-    if (!on && this.chatChoice().provider === PROVIDER_ID) {
-      const own = this.ownChatChoice()
-      if (own) await this.defaultModelService()?.saveSelection(own).catch((error: unknown) => this.ctx.logger.warn('nanomuse cloud: chat slot not moved off the account: %s', message(error)))
-    }
+    if (own) await this.defaultModelService()?.saveSelection(own).catch((error: unknown) => this.ctx.logger.warn('nanomuse cloud: chat slot not moved off the account: %s', message(error)))
     await this.writeState()
     await this.writeHands().catch((error: unknown) => this.ctx.logger.warn('nanomuse cloud: hands model not written: %s', message(error)))
     this.broadcast()
@@ -1386,7 +1424,7 @@ export default class NanomuseCloud extends Service {
    * adapter the way the Models page writes one. The row's capabilities are the catalogue's;
    * `custom` takes what the person says.
    */
-  async saveProvider(input: { id: string; apiKey?: string; baseURL?: string; label?: string; capabilities?: string[]; lang?: string }): Promise<OwnProvider> {
+  async saveProvider(input: { id: string; apiKey?: string; baseURL?: string; label?: string; capabilities?: string[]; models?: string[]; lang?: string }): Promise<OwnProvider> {
     const id = input.id.trim().toLowerCase()
     if (id === CHATGPT_PROVIDER || id === PROVIDER_ID) throw new RelayError(400, 'bad_provider', 'That row is written by a sign-in, not a key')
     const entry = this.catalogue.find((p) => p.id === id)
@@ -1396,26 +1434,64 @@ export default class NanomuseCloud extends Service {
     if (!/^https?:\/\//.test(baseURL)) throw new RelayError(400, 'bad_url', 'The address must start with http:// or https://')
     const apiKey = (input.apiKey ?? '').trim()
     if (!apiKey && !entry.auth.includes('none')) throw new RelayError(400, 'no_key', 'This provider needs a key')
-    if (apiKey && /\s/.test(apiKey)) throw new RelayError(400, 'bad_key', 'A key has no spaces in it')
+    // not `bad_key`: the client reads that code as a retired sign-in
+    if (apiKey && /\s/.test(apiKey)) throw new RelayError(400, 'key_shape', 'A key has no spaces in it')
     let capabilities: Capability[] = entry.capabilities
     if (entry.user_capabilities) {
       const said = (input.capabilities ?? []).filter((c): c is Capability => (CAPABILITIES as readonly string[]).includes(c))
       capabilities = CAPABILITIES.filter((c) => c === 'chat' || said.includes(c))
     }
+    const listed = await listModelRows(entry.protocol, baseURL, apiKey)
+    // The ids the person typed (a gateway that does not answer `GET /models`, or one model
+    // wanted out of hundreds): first in the list, the endpoint's own after them; a typed id the
+    // list also has keeps what the list said about it (OpenRouter's thinking levels).
+    const typed = typedModelIds(input.models)
+    let models = modelsOf({ ...entry, capabilities }, [...typed.map((id) => listed.find((m) => m.id === id) ?? { id }), ...listed.filter((m) => !typed.includes(m.id))])
+    if (entry.user_capabilities) models = models.map((m) => ({ ...m, vision: capabilities.includes('vision') }))
+    // A row with no chat model cannot be served (the model adapter refuses a route that resolves
+    // no models) and nothing could pick from it: a plain sentence, before anything is written.
+    if (!models.some((m) => m.kind === 'chat')) throw new RelayError(400, 'no_models', 'The endpoint did not list its models (GET /models). Type the ids of the models it serves, separated by commas.')
     const keyRef = apiKey ? keyRefFor(id) : ''
     if (keyRef) await this.ctx.credentials.set(credentialRef(keyRef), apiKey)
-    const listed = await listModels(entry.protocol, baseURL, apiKey)
-    let models = modelsOf({ ...entry, capabilities }, listed)
-    if (entry.user_capabilities) models = models.map((m) => ({ ...m, vision: capabilities.includes('vision') }))
     const label = (input.label ?? '').trim() || (input.lang?.toLowerCase().startsWith('zh') ? entry.name_zh : entry.name)
     const row: OwnProvider = { provider: id, label, protocol: entry.protocol, baseURL, keyRef, capabilities, models, at: Date.now() }
-    await this.ctx.settings.update(LLM_ROW, { providers: { [id]: ownProviderRow(row) } })
+    await this.ctx.settings.update(LLM_ROW, { providers: { [id]: ownProviderRow(row, entry.reasoning) } })
     this.state = { ...this.state, providers: { ...this.state.providers, [id]: row } }
     await this.writeState()
     await this.adoptOwnDefault(id, row)
     await this.writeHands()
     this.broadcast()
     return row
+  }
+
+  /**
+   * The saved own-key rows written to the model adapter again, where the row it has differs from
+   * what the catalogue now says (a vendor's thinking levels learned after the key was saved).
+   * The adapter's settings entry may not be registered yet while the host starts: a few quiet
+   * retries, then the next start.
+   */
+  private refreshOwnRows(attempt = 0): void {
+    const rows = Object.entries(this.state.providers ?? {}).filter(([id]) => id !== CHATGPT_PROVIDER && id !== PROVIDER_ID)
+    if (!rows.length) return
+    let current: { value?: unknown } | undefined
+    try {
+      current = this.ctx.settings.describe().find((d) => d.ns === LLM_ROW)
+    } catch {
+      current = undefined
+    }
+    if (!current) {
+      if (attempt < 4) setTimeout(() => this.refreshOwnRows(attempt + 1), 3000 * (attempt + 1)).unref?.()
+      return
+    }
+    const written = (current.value as { providers?: Record<string, unknown> } | undefined)?.providers ?? {}
+    void (async () => {
+      for (const [id, row] of rows) {
+        const entry = this.catalogue.find((p) => p.id === row.provider)
+        const wanted = ownProviderRow(row, entry?.reasoning)
+        if (canonical(written[id] ?? null) === canonical(wanted)) continue
+        await this.ctx.settings.update(LLM_ROW, { providers: { [id]: wanted } }).catch((error: unknown) => this.ctx.logger.warn('nanomuse: own-key row %s not refreshed: %s', id, message(error)))
+      }
+    })()
   }
 
   /**
@@ -1474,16 +1550,25 @@ export default class NanomuseCloud extends Service {
     }
   }
 
-  /** `POST /providers/remove`: the row, the credential and the choices that pointed at it. */
-  async removeProvider(id: string): Promise<void> {
-    if (id === CHATGPT_PROVIDER) return this.chatGptLogout()
+  /**
+   * `POST /providers/remove`: the row, the credential and the choices that pointed at it.
+   * `cloudModelsOn` is true when the row was the last chat source while the account's models
+   * were off, so they are on again (the person reads one sentence under the row).
+   */
+  async removeProvider(id: string): Promise<{ cloudModelsOn: boolean }> {
+    if (id === CHATGPT_PROVIDER) {
+      await this.chatGptLogout()
+      return { cloudModelsOn: false }
+    }
     const row = this.state.providers?.[id]
     if (!row) throw new RelayError(404, 'not_found', 'No such row')
-    await this.dropOwnRow(id, row)
+    const cloudModelsOn = await this.dropOwnRow(id, row)
     this.broadcast()
+    return { cloudModelsOn }
   }
 
-  private async dropOwnRow(id: string, row: OwnProvider): Promise<void> {
+  /** Removes the row and what pointed at it; true when the account's models had to come back on. */
+  private async dropOwnRow(id: string, row: OwnProvider): Promise<boolean> {
     try {
       await this.ctx.settings.mutate(LLM_ROW, [{ op: 'unset', path: ['providers', id] }])
     } catch (error: unknown) {
@@ -1509,17 +1594,56 @@ export default class NanomuseCloud extends Service {
       }
       this.state = { ...this.state, media }
     }
-    const svc = this.defaultModelService()
-    try {
-      if (svc?.currentSelection().provider === id) {
-        const next = this.chatOptions()[0]
-        if (next) await svc.saveSelection({ provider: next.provider, model: next.id })
-      }
-    } catch {
-      // the default model service may not be up
-    }
+    const cloudModelsOn = await this.releaseChatRoute(id)
     await this.writeState()
     await this.writeHands()
+    return cloudModelsOn
+  }
+
+  /**
+   * A provider route is going away (an own row removed, the account signed out). A chat slot
+   * or the main chat still naming it would send every turn to a route no adapter serves, and
+   * the person would read `no adapter registered for provider "custom"` (NO_ADAPTER) with
+   * nothing to do about it. The slot moves to the first chat model left (the account's, then
+   * the own rows'). When nothing is left because the account's models are switched off, they
+   * come back on and the slot takes the account's chat model (the same rule as the switch
+   * itself, which refuses to go off while nothing else could answer); only with no account at
+   * all does the slot fall back to dsh's stock DeepSeek default, which the next key or sign-in
+   * adopts again as it does on a fresh profile. The main chat follows when it sat on that
+   * route. Returns true when the account's models came back on.
+   */
+  private async releaseChatRoute(id: string): Promise<boolean> {
+    const svc = this.defaultModelService()
+    if (!svc) return false
+    let cloudModelsOn = false
+    try {
+      let to: { provider: string; model: string } | undefined
+      if (svc.currentSelection().provider === id) {
+        let next = this.chatOptions().find((o) => o.provider !== id)
+        if (!next && this.state.cloudModelsOff && this.signedInCache && this.state.account) {
+          const { cloudModelsOff: _off, ...rest } = this.state
+          this.state = rest
+          next = this.chatOptions().find((o) => o.provider !== id)
+          cloudModelsOn = true
+          this.ctx.logger.info('nanomuse: %s was the last chat source; the account\'s models are on again', id)
+        }
+        to = next ? { provider: next.provider, model: next.id } : { ...STOCK_DEFAULT_MODEL }
+        await svc.saveSelection(to)
+        this.ctx.logger.info('nanomuse: %s is gone; new chats answer through %s/%s', id, to.provider, to.model)
+      }
+      const main = this.syncMainSession()
+      if (main) {
+        const current = await this.sessionSelection(main).catch(() => undefined)
+        const held = this.cloudOnce.get(main)
+        if (current?.provider === id || held?.provider === id) {
+          to ??= svc.currentSelection()
+          await this.mainChatFollows(to.provider, to.model)
+        }
+      }
+    } catch (error: unknown) {
+      this.ctx.logger.warn('nanomuse: the chat slot could not leave %s: %s', id, message(error))
+    }
+    return cloudModelsOn
   }
 
   /** `POST /chatgpt/login`: starts the runtime's sign-in and returns the page to open; `done` follows in the live state. */
@@ -1785,7 +1909,7 @@ export default class NanomuseCloud extends Service {
       cloud: { signedIn: this.signedInCache && Boolean(account), hint: account?.hint ?? '' },
       profile: this.profile.current(),
       hub: this.hubState(),
-      hands: { calls: [...this.calls.values()], steps: this.steps },
+      hands: { calls: [...this.calls.values()], steps: this.steps, run: this.screenRuns.current() },
       stage: this.stage,
       notices: this.notices,
       approvals: this.approvalDesk.list(),
@@ -2577,6 +2701,8 @@ export default class NanomuseCloud extends Service {
     this.sync?.signedOut()
     this.signedInCache = false
     this.lastSharedConnectors = ''
+    // the account's route is gone from the model layer: a chat slot left on it would fail every turn with NO_ADAPTER
+    await this.releaseChatRoute(PROVIDER_ID)
     await this.writeState()
     await this.writeHands().catch(() => rm(join(this.dir(), 'hands.json'), { force: true }).catch(() => undefined))
     await this.profile.reset()
@@ -2626,12 +2752,17 @@ export default class NanomuseCloud extends Service {
     this.steps += 1
     this.calls.set(callId, { id: callId, name, args: pickArgs(args), sessionId, since: now })
     this.trajectory.began(sessionId, callId)
+    this.screenRuns.began(sessionId, name, now)
+    this.armRunSweep()
     this.broadcast()
   }
 
   private ended(callId: string): void {
-    if (this.calls.delete(callId)) {
+    const call = this.calls.get(callId)
+    if (call && this.calls.delete(callId)) {
       this.lastCallAt = Date.now()
+      this.screenRuns.ended(call.sessionId, this.lastCallAt)
+      this.armRunSweep()
       this.broadcast()
     }
     // the stage empties itself a while after the hands rest
@@ -2641,6 +2772,24 @@ export default class NanomuseCloud extends Service {
       if (this.calls.size === 0 && Date.now() - this.lastCallAt >= STAGE_REST_MS - 1000) this.clearStage()
     }, STAGE_REST_MS)
     this.stageTimer.unref?.()
+  }
+
+  /**
+   * The screen runs close with their turn (`turn/end`, below); this is the safety net for a
+   * turn whose end never came: a run quiet for `SCREEN_RUN_IDLE_MS` with nothing in flight
+   * lets go of the screen, and the glow goes down.
+   */
+  private armRunSweep(): void {
+    if (this.runTimer) clearTimeout(this.runTimer)
+    this.runTimer = undefined
+    if (this.screenRuns.size === 0) return
+    this.runTimer = setTimeout(() => {
+      this.runTimer = undefined
+      const inFlight = (sessionId: string) => [...this.calls.values()].some((c) => c.sessionId === sessionId)
+      if (this.screenRuns.sweep(Date.now(), inFlight)) this.broadcast()
+      this.armRunSweep()
+    }, SCREEN_RUN_IDLE_MS + 50)
+    this.runTimer.unref?.()
   }
 
   // -- the Live stage -------------------------------------------------------------------
@@ -3226,6 +3375,7 @@ export default class NanomuseCloud extends Service {
         if (typeof body.label === 'string') input.label = body.label
         if (typeof body.lang === 'string') input.lang = body.lang
         if (Array.isArray(body.capabilities)) input.capabilities = body.capabilities.map(String)
+        if (Array.isArray(body.models) || typeof body.models === 'string') input.models = typedModelIds(body.models)
         const row = await this.serialize(() => this.saveProvider(input))
         // the "Use it for" card: the slots this row could take and the model each would get
         return send(res, 200, { ...row, offer: this.slotOffer(row.provider) })
@@ -3237,8 +3387,7 @@ export default class NanomuseCloud extends Service {
       }
       if (req.method === 'POST' && route === '/providers/remove') {
         const body = await json(req)
-        await this.serialize(() => this.removeProvider(String(body.id ?? '')))
-        return send(res, 204)
+        return send(res, 200, await this.serialize(() => this.removeProvider(String(body.id ?? ''))))
       }
       if (req.method === 'POST' && route === '/chatgpt/login') return send(res, 200, { url: await this.chatGptLogin() })
       if (req.method === 'POST' && route === '/chatgpt/cancel') {

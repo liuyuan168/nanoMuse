@@ -1,4 +1,9 @@
-# 进 PRoot/Alpine rootfs 的脚本必须保持 LF：CRLF 会让 /bin/sh 与 python3
-# 解析失败（\r 进入 shebang/语法）。这些文件是运行时资产，不是源码编辑对象。
+# Shell scripts are run from a checkout on Windows too (Git Bash, WSL, the desktop's build);
+# a CRLF checkout breaks them, so they keep LF whatever core.autocrlf says. Nothing else is
+# normalised: android/ is an upstream subtree and carries a few vendored files as they came.
+*.sh text eol=lf
+gradlew text eol=lf
+# 进 PRoot/Alpine rootfs 的运行时资产（无扩展名，*.sh 不覆盖）：CRLF 会让
+# /bin/sh 与 python3 解析失败（\r 进入 shebang/语法）。
 android/src/android/app/src/main/assets/default_mount/usr/local/bin/phone-ops-mcp text eol=lf
 android/src/android/app/src/main/assets/default_mount/usr/local/lib/phone-ops-mcp/** text eol=lf

@@ -140,16 +140,27 @@ export async function request<T>(path: string, init: RequestInit = {}): Promise<
   }
   if (res.status === 401) throw new AuthError();
   if (!res.ok) {
-    let detail = res.statusText || `HTTP ${res.status}`;
+    let data: unknown;
     try {
-      const data = await res.json();
-      detail = data.detail ?? JSON.stringify(data);
+      data = await res.json();
     } catch {
-      /* ignore */
+      /* not JSON: the sentence below stands for it */
     }
-    throw new Error(detail);
+    throw new Error(failureDetail(res.status, data));
   }
   return (await res.json()) as T;
+}
+
+/**
+ * What a refused reply says to the person: the runtime's `detail` when it is a sentence (the
+ * screens translate the ones they know), otherwise one sentence for the status. A validation
+ * error's `detail` is a list and a crashed route sends no JSON; neither is shown as it came,
+ * and the status number never is.
+ */
+export function failureDetail(status: number, data: unknown): string {
+  const detail = data && typeof data === "object" ? (data as { detail?: unknown }).detail : undefined;
+  if (typeof detail === "string" && detail.trim()) return detail;
+  return status >= 500 ? "Your nanoMuse hit a problem; try again in a moment." : "Your nanoMuse could not do that.";
 }
 
 const json = (body: unknown): RequestInit => ({ method: "POST", body: JSON.stringify(body) });
@@ -242,9 +253,10 @@ export const api = {
     request<{ thread: ThreadMeta; events: TimelineEvent[]; has_more: boolean }>(
       `/api/threads/${thread}/events?limit=${limit}${before ? `&before=${encodeURIComponent(before)}` : ""}`,
     ),
-  /** `language` is the locale of this console's screens; the reply is written in it. */
-  send: (thread: string, text: string, files: string[] = [], language = "") =>
-    request<{ event: TimelineEvent; thread: ThreadMeta }>(`/api/threads/${thread}/send`, json({ text, files, language })),
+  /** `language` is the locale of this console's screens; the reply is written in it. `via: "cloud"` is
+   * *Use nanoMuse Cloud this time*: this one turn on the account's model (401 `signed_out` when signed out). */
+  send: (thread: string, text: string, files: string[] = [], language = "", via = "") =>
+    request<{ event: TimelineEvent; thread: ThreadMeta }>(`/api/threads/${thread}/send`, json(via ? { text, files, language, via } : { text, files, language })),
   /** A file to attach: the bytes as the body, the name in the query. */
   upload: (file: File) =>
     request<AttachmentInfo>(`/api/files/upload?name=${encodeURIComponent(file.name || "photo.jpg")}`, {
@@ -304,7 +316,7 @@ export const api = {
     if (token) headers["Authorization"] = `Bearer ${token}`;
     const res = await fetch(`/api/files/${path.split("/").map(encodeURIComponent).join("/")}`, { headers });
     if (res.status === 401) throw new AuthError();
-    if (!res.ok) throw new Error(res.statusText || `HTTP ${res.status}`);
+    if (!res.ok) throw new Error(failureDetail(res.status, await res.json().catch(() => undefined)));
     return res.text();
   },
   settings: () => request<SettingsView>("/api/settings"),

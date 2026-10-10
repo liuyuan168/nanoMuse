@@ -14,6 +14,7 @@ import { startOperatorServer, type OperatorServer } from "./operator-server";
 import { EXTERNAL_URL, navigationVerdict, sameOrigin } from "./navigation";
 import { relink } from "./profile-link";
 import { maskProxyUrl, proxyEnv, validProxyUrl } from "./proxy";
+import { HostStartWatch, maskToken, waitedText, type WaitState } from "./host-start";
 
 /**
  * nanoMuse Desktop — the nanoMuse desktop, built on DeepSeek Harness.
@@ -39,7 +40,6 @@ const PROFILE = "nanomuse";
 // the agent's reminders — an optional bundle of the harness, on by default here), then ours.
 const BUNDLES = ["@deepseek-ai/dsh-base", "@deepseek-ai/dsh-web-app", "@deepseek-ai/dsh-experimental-schedule-bundle", "dsh-nanomuse"];
 const BUNDLE = "dsh-nanomuse";
-const READY_TIMEOUT_MS = 120_000;
 const RELEASES_PAGE = "https://github.com/nano-muse/nanoMuse/releases/latest";
 const ISSUES_PAGE = "https://github.com/nano-muse/nanoMuse/issues";
 const DOCS_PAGE = "https://nanomuse.cn/docs/desktop";
@@ -50,6 +50,12 @@ const T = {
   starting: zh ? "正在启动…" : "Starting…",
   notReady: zh ? "nanoMuse 没能启动" : "nanoMuse could not start",
   stopped: zh ? "nanoMuse 的后台停止了" : "nanoMuse's host stopped",
+  stillStarting: zh ? "nanoMuse 还在启动" : "nanoMuse is still starting",
+  stillStartingDetail: (waited: string) =>
+    zh
+      ? `后台已经启动了 ${waited}，进程还在运行。装好之后的第一次启动可能要好几分钟：系统会把应用的每个文件检查一遍（Windows 上是实时防护在扫描），磁盘慢的话更久；之后再启动就快了。可以继续等，也可以退出（退出会停掉还在启动的后台）。`
+      : `The host has been starting for ${waited} and its process is still running. The first start after an install can take several minutes: the system checks each of the app's files once (on Windows that is the real-time scanner), and a slow disk adds to it; later starts are quicker. Keep waiting, or quit (quitting stops the host that is still starting).`,
+  keepWaiting: zh ? "继续等" : "Keep waiting",
   restart: zh ? "重新启动" : "Restart",
   quit: zh ? "退出" : "Quit",
   copyDetails: zh ? "复制详情" : "Copy details",
@@ -147,7 +153,7 @@ function log(line: string): void {
   }
 }
 
-type Shipped = { dsh?: string; bundle?: string; platform?: string; arch?: string };
+type Shipped = { dsh?: string; bundle?: string; platform?: string; arch?: string; sharp?: "native" | "wasm" };
 
 /** What scripts/prepare-dsh.mjs wrote next to the staged dsh: the versions for About. */
 function shipped(): Shipped {
@@ -338,52 +344,101 @@ function startHost(): Promise<string> {
         const proc = spawn(process.execPath, args, { cwd: homedir(), env, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
         child = proc;
         hostStderr = "";
-        let settled = false;
-        const timer = setTimeout(() => {
-          if (settled) return;
-          settled = true;
-          reject(new Error(`the host did not announce its address within ${READY_TIMEOUT_MS / 1000} s`));
-        }, READY_TIMEOUT_MS);
-        let out = "";
+        // The wait (src/host-start.ts): no deadline while the Host runs. After two minutes the
+        // loading page says the start is slow and shows the Host's last lines; after ten the
+        // person is asked whether to keep waiting. Only the Host's exit fails the start.
+        const watch = new HostStartWatch({
+          onSlow: (state) => showSlowStart(state),
+          onCap: (state) => void askKeepWaiting(watch, state),
+        });
+        startWatch = watch;
+        let ready = false;
         proc.stdout?.setEncoding("utf8");
         proc.stdout?.on("data", (chunk: string) => {
-          out = (out + chunk).slice(-16_384);
-          const m = /dsh web: (http:\/\/127\.0\.0\.1:\d+\/\?token=\S+)/.exec(out);
-          if (m && m[1] && !settled) {
-            settled = true;
-            clearTimeout(timer);
-            resolve(m[1]);
-          }
-          for (const line of chunk.split("\n")) if (line.trim()) log(`dsh: ${line.replace(/token=\S+/, "token=…")}`);
+          watch.stdout(chunk);
+          for (const line of chunk.split("\n")) if (line.trim()) log(`dsh: ${maskToken(line)}`);
         });
         proc.stderr?.setEncoding("utf8");
         proc.stderr?.on("data", (chunk: string) => {
           const lines = chunk.split("\n").filter((line) => line.trim());
           const kept = process.platform === "linux" ? lines.filter((line) => !glibCritical(line)) : lines;
-          if (kept.length) hostStderr = (hostStderr + kept.join("\n") + "\n").slice(-65_536);
+          if (kept.length) {
+            hostStderr = (hostStderr + kept.join("\n") + "\n").slice(-65_536);
+            watch.stderr(kept.join("\n"));
+          }
           for (const line of kept) log(`dsh! ${line}`);
         });
-        proc.on("error", (exc) => {
-          if (settled) return;
-          settled = true;
-          clearTimeout(timer);
-          reject(exc);
-        });
+        proc.on("error", (exc) => watch.error(exc));
         proc.on("exit", (code, signal) => {
           log(`host exited: code=${code} signal=${signal}${glibCriticals ? ` (${glibCriticals} GLib-GObject-CRITICAL lines from sharp's libvips not logged)` : ""}`);
           glibCriticals = 0;
           child = null;
-          if (!settled) {
-            settled = true;
-            clearTimeout(timer);
+          watch.exited(code, signal);
+          if (ready && !quitting && !restartingHost) void hostStopped();
+        });
+        void watch.done.then((outcome) => {
+          if (startWatch === watch) startWatch = null;
+          if (outcome.kind === "ready") {
+            ready = true;
+            const waited = watch.state().waitedMs;
+            if (waited > 30_000) log(`host: ready after ${waitedText(waited, false)}`);
+            resolve(outcome.url);
+          } else if (outcome.kind === "exited") {
+            const { code, signal } = outcome;
             reject(new Error(`the host exited before it was ready (code ${code ?? signal})`));
-          } else if (!quitting && !restartingHost) {
-            void hostStopped();
-          }
+          } else reject(outcome.error);
         });
       })
       .catch(reject);
   });
+}
+
+/** The wait for the Host's address under way, so the cap dialog and the quit know about it. */
+let startWatch: HostStartWatch | null = null;
+
+/** The loading page: "Still starting", with the Host's last lines (resources/loading.html, `__slow`). */
+function showSlowStart(state: WaitState): void {
+  const win = mainWindow;
+  if (!win || win.isDestroyed() || hostUrl) return;
+  if (state.tail.length === 0 && state.silentMs === state.waitedMs) log(`host: no output after ${waitedText(state.waitedMs, false)}; still waiting`);
+  void win.webContents.executeJavaScript(`window.__slow && window.__slow(${JSON.stringify(state.tail)})`).catch(() => undefined);
+}
+
+/**
+ * The cap: the Host has run for CAP_MS without its address. The person decides; a Host
+ * that is alive is never stopped behind their back. "Keep waiting" asks again CAP_MS later;
+ * "Quit" ends the app, which stops the Host (before-quit), and the log says so.
+ */
+async function askKeepWaiting(watch: HostStartWatch, state: WaitState): Promise<void> {
+  if (quitting || startWatch !== watch) return;
+  const waited = waitedText(state.waitedMs, zh);
+  log(`host: still starting after ${waitedText(state.waitedMs, false)} (process alive, last line ${waitedText(state.silentMs, false)} ago); asking whether to keep waiting`);
+  for (;;) {
+    const { response } = await dialog.showMessageBox({
+      type: "warning",
+      title: T.stillStarting,
+      message: T.stillStarting,
+      detail: `${T.stillStartingDetail(waited)}${state.tail.length ? `\n\n${state.tail.slice(-4).join("\n")}` : ""}`,
+      buttons: [T.keepWaiting, T.copyDetails, T.quit],
+      defaultId: 0,
+      cancelId: 0,
+      noLink: true,
+    });
+    if (quitting || startWatch !== watch) return;
+    if (response === 1) {
+      clipboard.writeText(details(`${T.stillStarting} (${waited})`));
+      await dialog.showMessageBox({ type: "info", title: "nanoMuse", message: T.copied, buttons: ["OK"] });
+      continue;
+    }
+    if (response === 2) {
+      log(`host: still starting after ${waitedText(state.waitedMs, false)}; quitting at the person's request, which stops the host process`);
+      app.quit();
+      return;
+    }
+    log("host: keeping on waiting at the person's request");
+    watch.keepWaiting();
+    return;
+  }
 }
 
 /** How many `GLib-GObject-CRITICAL` lines the Host's stderr carried this launch (Linux; see glibCritical). */
@@ -391,12 +446,14 @@ let glibCriticals = 0;
 const GLIB_CRITICAL = /GLib-GObject-CRITICAL \*\*: .*g_object_(un)?ref: assertion 'G_IS_OBJECT \(object\)' failed/;
 
 /**
- * Linux: whether a Host stderr line is the GLib assertion that sharp's libvips raises on
- * every picture it touches inside Electron — the harness resizes the hands' screenshots
- * with sharp, whose prebuilt libvips carries its own GLib, while Electron's binary links
- * the system's and leaks its symbols into the process (electron/electron#46323; sharp's
- * install notes, "Electron and Linux"). Harmless to the picture, 65 000 lines a session
- * in the log. The first one is logged with this explanation; the rest are counted.
+ * Linux: whether a Host stderr line is the GLib assertion that sharp's prebuilt libvips
+ * raised on every picture it touched inside Electron, whose binary links the system's GLib
+ * and leaks its symbols into the process (electron/electron#46323; sharp's install notes,
+ * "Electron and Linux"); on some systems the clash was a SIGSEGV on the first decode (#274).
+ * The Linux package now carries sharp's WebAssembly build (scripts/prepare-dsh.mjs) and
+ * the line should not appear at all; the filter stays for a copy whose dsh was staged
+ * by hand with the native one. The first line is logged with this explanation; the rest
+ * are counted.
  */
 function glibCritical(line: string): boolean {
   if (!GLIB_CRITICAL.test(line)) return false;
@@ -804,7 +861,7 @@ async function reportBug(): Promise<{ screenshot: string; url: string }> {
     surface: "Desktop app",
     version: app.getVersion(),
     os: facts.join(" · "),
-    what: screenshot ? `\n\n(Drag the screenshot nanoMuse saved to Downloads — ${screenshot.split(/[\\/]/).pop()} — in here.)` : "",
+    what: screenshot ? `\n\n(Drag the screenshot nanoMuse saved to Downloads, ${screenshot.split(/[\\/]/).pop()}, in here.)` : "",
   });
   const url = `${ISSUES_PAGE}/new?${params.toString()}`;
   void shell.openExternal(url);
@@ -909,6 +966,9 @@ function registerBridge(): void {
 //     question the agent asked before a step (Allow once / Deny) or the hold ("Your turn —
 //     Done"); shown when the main window is not the one in front, so the person can see and
 //     answer from wherever they are. It moves out of the way when the hands act under it.
+// Both stay up for the whole run: the web client keeps `active` from the first computer call
+// of a turn to the turn's end (the host's `hands.run`), so the model's thinking between two
+// steps does not take the glow and the capsule down and put them back (they blinked, 1.0.0).
 
 interface OverlayCard {
   id: string;
@@ -919,6 +979,7 @@ interface OverlayCard {
 }
 
 interface OverlayHands {
+  /** The hands have this screen: a run is on, from its first computer call to its turn's end. */
   active: boolean;
   held: boolean;
   x: number;
@@ -1452,10 +1513,10 @@ async function guidePermissions(): Promise<Record<PermissionKind, PermissionStat
       message: zh ? "nanoMuse 需要「辅助功能」权限" : "nanoMuse needs Accessibility",
       detail: zh
         ? viaHelper
-          ? `动手操作电脑要靠它移动鼠标和输入。系统会弹出请求；在「系统设置 → 隐私与安全性 → 辅助功能」里打开 ${target} 即可——这是 nanoMuse 自带的一个小程序，专门负责截图和操作，权限只给它。`
-          : "动手操作电脑要靠它移动鼠标和输入。系统会弹出请求；在「系统设置 → 隐私与安全性 → 辅助功能」里打开 nanoMuse Desktop 即可——它附带的运行时作为应用的一部分运行，不会单独出现在列表里。"
+          ? `动手操作电脑要靠它移动鼠标和输入。系统会弹出请求；在「系统设置 → 隐私与安全性 → 辅助功能」里打开 ${target} 即可。这是 nanoMuse 自带的一个小程序，专门负责截图和操作，权限只给它。`
+          : "动手操作电脑要靠它移动鼠标和输入。系统会弹出请求；在「系统设置 → 隐私与安全性 → 辅助功能」里打开 nanoMuse Desktop 即可。它附带的运行时作为应用的一部分运行，不会单独出现在列表里。"
         : viaHelper
-          ? `The hands move the mouse and type through it. The system asks next; in System Settings → Privacy & Security → Accessibility, switch on ${target} — the small program nanoMuse brings along for the screenshots and the input. Only it needs the permission.`
+          ? `The hands move the mouse and type through it. The system asks next; in System Settings → Privacy & Security → Accessibility, switch on ${target}, the small program nanoMuse brings along for the screenshots and the input. Only it needs the permission.`
           : "The hands move the mouse and type through it. The system asks next; in System Settings → Privacy & Security → Accessibility, switch on nanoMuse Desktop. The runtime it bundles runs as part of the app and does not appear separately.",
       buttons: [zh ? "继续" : "Continue", zh ? "以后再说" : "Later"],
       defaultId: 0,
@@ -1470,10 +1531,10 @@ async function guidePermissions(): Promise<Record<PermissionKind, PermissionStat
       detail: zh
         ? viaHelper
           ? `它靠截图看到屏幕上有什么。点「继续」后系统会询问一次；在「屏幕录制」面板里打开 ${target}（只需要这一项）。打开后它会自己重新启动，应用本身不用重启。`
-          : "它靠截图看到屏幕上有什么。点「继续」后系统会询问一次；在「屏幕录制」面板里打开 nanoMuse Desktop（只需要这一项），然后重新启动应用——macOS 的这项权限只对重新启动后的应用生效。"
+          : "它靠截图看到屏幕上有什么。点「继续」后系统会询问一次；在「屏幕录制」面板里打开 nanoMuse Desktop（只需要这一项），然后重新启动应用：macOS 的这项权限只对重新启动后的应用生效。"
         : viaHelper
           ? `It sees the screen through screenshots. After Continue the system asks once; switch on ${target} in the Screen Recording pane (that one entry is all). It restarts by itself once the switch is on; the app does not need to.`
-          : "It sees the screen through screenshots. After Continue the system asks once; switch on nanoMuse Desktop in the Screen Recording pane (that one entry is all), then relaunch the app — macOS applies this permission to freshly started apps only.",
+          : "It sees the screen through screenshots. After Continue the system asks once; switch on nanoMuse Desktop in the Screen Recording pane (that one entry is all), then relaunch the app: macOS applies this permission to freshly started apps only.",
       buttons: [zh ? "继续" : "Continue", zh ? "以后再说" : "Later"],
       defaultId: 0,
       cancelId: 1,
@@ -1870,6 +1931,12 @@ if (!app.requestSingleInstanceLock({ version: app.getVersion() })) {
     globalShortcut.unregisterAll();
     if (quitting) return;
     quitting = true;
+    if (startWatch) {
+      // a Host still starting goes with the app; the log says it was alive
+      log("quit: the host was still starting; stopping it");
+      startWatch.dispose();
+      startWatch = null;
+    }
     if (child || operatorServer || macHelper?.running()) {
       e.preventDefault();
       void Promise.all([stopHost(), stopOperator()]).then(() => app.quit());

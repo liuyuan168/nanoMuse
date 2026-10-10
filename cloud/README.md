@@ -35,7 +35,9 @@ its base URL.
   `CLOUD_SECRET` so the operator's page can tell accounts apart; the database
   file on its own reveals none of them. Message content is forwarded, never
   written to disk. The database holds: hashed and encrypted identifier, key
-  hashes, token counts per request, video task ids, and the profile below.
+  hashes, the keyed hash of a code still waiting to be used (six digits, so
+  hashing it plainly would be a table an attacker could work through), video
+  task ids, token counts per request, and the profile below.
 - **One look on every device.** `GET` / `PUT` / `DELETE /v1/me/profile` keep
   the agent's name and face for the account — the dragon, an emoji on a colour,
   or a face drawn in the avatar studio with its five small stills (WebP, 200 KB
@@ -170,6 +172,8 @@ for the full list. The ones that matter:
 | `MAX_IN_FLIGHT` | 4 | requests of one account under way at the same time (0 = off); each holds a reservation against the allowance while it runs — see *Money* |
 | `PASSWORD_MAX_ATTEMPTS`, `LOCKOUT_S` | 5, 900 | wrong passwords before an account is locked for that long (a code still works) |
 | `LOGIN_FAIL_PER_IP_HOUR` | 30 | wrong passwords from one network address per hour across all accounts — a list of numbers tried once each never trips the per-account lock, this does (0.12); 0 = off |
+| `CODE_TTL_S`, `CODE_MAX_ATTEMPTS` | 600, 5 | how long a sign-in code is good for, and how many wrong guesses it survives |
+| `CODE_PER_IDENTIFIER_10M`, `CODE_PER_IP_HOUR` | 3, 10 | codes one number or address may request per ten minutes, and one network address per hour; past either the request is answered `429 code_too_often` |
 | `CODE_SENDER` | `log` | `log`, `smtp`, `aliyun` or `both` (SMS for phones, mail for addresses) |
 | `ALIYUN_SMS_API` | `dypns` | `dypns` (号码认证服务 `SendSmsVerifyCode`) or `dysms` (短信服务 `SendSms`) |
 | `CLOUD_MODELS` | DeepSeek + Qwen chat, Qwen image, Wan video | JSON list to replace the menu, prices and lanes (`for`, `recommended_for`) included — see below |
@@ -222,7 +226,8 @@ Any OpenAI-compatible upstream works for chat; the image and video
 endpoints assume DashScope. Video is relayed under DashScope's own paths
 (`/api/v1/services/aigc/video-generation/video-synthesis`, `/api/v1/tasks/{id}`,
 `/api/v1/uploads`), so the app's video code only needs to point its host at
-the relay; a task can be polled by the account that created it only.
+the relay; a task can be polled by the account that created it only, and the
+relay polls on the account's behalf when the app does not (*Money*, below).
 
 ### Runtime settings (0.15)
 
@@ -413,7 +418,7 @@ block (`total`, `grant`, `left`, `unlimited`, `warn` at 80 %, `usd_cny`,
 `left_today` / `resets_at` = 0 for one more version) and each model in
 `/v1/models` carries its `nanomuse.price_cny`, so the apps show what was spent
 in both currencies. The refusal, `429 allowance_exhausted`, says what is left
-and where the two ways on lead (invite a friend, one's own key) — sign-in and
+and where the three ways on lead (one's own key, a plan one already pays for, an invited friend) — sign-in and
 the hub are never gated, only the model routes. The admin page shows spend per
 account and per day (`DAY_OFFSET_H`) in ¥ and $.
 
@@ -463,7 +468,16 @@ allowance check one by one and overshoot it together. Now each request is
 *reserved* while it runs and *settled* when it is over: a picture or a clip at
 its known price, a chat at a typical turn's worth of its model (6 000 prompt
 and 1 500 completion tokens — the ledger gets the real figure when the reply is
-in), and a clip still being made holds its price until the task is seen done.
+in), and a clip still being made holds its price until the task is seen done,
+for an hour at most. A clip is charged once, at the price fixed when it was
+submitted, the first time its task is seen `SUCCEEDED`: by the app's poll, or
+(0.24) by the relay itself. Since an app that was closed never polls, the relay
+asks the provider about every unsettled task once shortly before the hour's
+hold lapses and once more before the row is purged (three days), a handful of
+tasks a minute: `SUCCEEDED` charges the clip, `FAILED` or `CANCELED` lets the
+hold go, a task the provider no longer knows is marked `UNKNOWN`; a provider
+that does not answer is asked again next minute. A poll after the relay settled
+a task charges nothing more.
 The check counts what is held: a chat starts while anything is left beyond it,
 a picture or a clip only when its own price fits on top. At most `MAX_IN_FLIGHT`
 requests of one account run at once; the one over that is told so
@@ -504,7 +518,8 @@ with their key deletes the account, its keys, ledger and devices.
 
 Two more panels come from `/v1/admin/series` and `/v1/admin/traffic`: the
 relay's own numbers by day (sign-ins, new and active accounts, sign-ups
-through an invite, data switches turned on, calls, refusals, upstream errors),
+through an invite, data switches turned on, calls, refusals, upstream errors, and the
+provider's content-check refusals, counted apart since they say nothing about the provider),
 the remembered devices by kind and system, the invite funnel and — with
 `WEB_INFO_URL` — how many nanoMuse Web accounts and sessions the gateway
 holds; and, with `TRAFFIC_DB`, the project site's visits and downloads:
@@ -654,8 +669,9 @@ tokens, the newest turns, and the export.
 
 ```bash
 # is it well? aggregates only (0.13): requests under way, the hub's counters, the last
-# hour's requests / upstream errors / refusals / sign-ins, the database, `problems` —
-# what deploy/nanomuse-hk/selfcheck.sh reads every ten minutes
+# hour's requests / upstream errors / content-check refusals / refusals / sign-ins, the
+# database, `problems` (twenty upstream errors in an hour is one; a content check declining
+# words is not) — what deploy/nanomuse-hk/selfcheck.sh reads every ten minutes
 curl -H "X-Admin-Token: $CLOUD_ADMIN_TOKEN" https://$CLOUD_DOMAIN/v1/admin/health
 # who signed up (with the phone numbers and addresses since 0.22 — the console's answer)
 curl -H "X-Admin-Token: $CLOUD_ADMIN_TOKEN" https://$CLOUD_DOMAIN/v1/admin/accounts
@@ -733,6 +749,11 @@ report can be matched to a ledger row without any content being logged.
 - `both` routes by identifier type. Non-mainland numbers are accepted as
   identifiers but the Aliyun sender only covers `+86`; use e-mail for the rest
   or plug in another sender in `senders.py`.
+
+Any sender but `log` needs `CLOUD_SECRET`: without a secret the relay would
+hash every identifier with the published development key while real codes go
+out to real people, so it refuses to start (`CODE_SENDER=log` on your own
+machine is the one case where the development key is fine).
 
 ### For App Store review
 
