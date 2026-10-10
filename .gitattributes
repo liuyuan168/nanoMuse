@@ -1,0 +1,4 @@
+# 进 PRoot/Alpine rootfs 的脚本必须保持 LF：CRLF 会让 /bin/sh 与 python3
+# 解析失败（\r 进入 shebang/语法）。这些文件是运行时资产，不是源码编辑对象。
+android/src/android/app/src/main/assets/default_mount/usr/local/bin/phone-ops-mcp text eol=lf
+android/src/android/app/src/main/assets/default_mount/usr/local/lib/phone-ops-mcp/** text eol=lf

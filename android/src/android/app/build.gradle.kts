@@ -1,3 +1,4 @@
+import java.io.File
 import java.util.Properties
 
 plugins {
@@ -194,7 +195,16 @@ val stageDebugSkillAssets by tasks.registering(Exec::class) {
     if (skillDir.isDirectory) inputs.dir(skillDir)
     if (script.isFile) inputs.file(script)
     outputs.dir(layout.projectDirectory.dir("src/debug/assets/debug-skill"))
-    commandLine("bash", script.absolutePath)
+    // Windows: a bare "bash" resolves to C:\Windows\System32\bash.exe (the WSL
+    // launcher, which fails without a distro installed). Prefer a discovered
+    // Git-for-Windows bash; fall back to "bash" on POSIX hosts. Forward-slash
+    // script path because the script's `cd "$(dirname ...)"` can't digest
+    // backslashes.
+    val bashBin = listOf(
+        "C:/Program Files/Git/bin/bash.exe",
+        "D:/Programs/Git/bin/bash.exe",
+    ).firstOrNull { File(it).isFile } ?: "bash"
+    commandLine(bashBin, script.absolutePath.replace('\\', '/'))
 }
 tasks.matching { it.name.startsWith("merge") && it.name.endsWith("Assets") && it.name.contains("Debug") }
     .configureEach { dependsOn(stageDebugSkillAssets) }

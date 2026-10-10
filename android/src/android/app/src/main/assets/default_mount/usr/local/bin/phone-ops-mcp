@@ -1,0 +1,15 @@
+#!/bin/sh
+# phone-ops-mcp — 本机手机操控 MCP server（stdio），供 minis-mcp-cli 拉起。
+# 工具实现经 PRoot native_offload 扩展转发到宿主侧 android-shizuku-cli /
+# android-a11y-cli。零第三方依赖（stdlib only），无需 pip。
+
+LOG="/var/minis/mcp-servers/phone-ops-mcp.log"
+mkdir -p /var/minis/mcp-servers 2>/dev/null
+_log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >> "$LOG" 2>/dev/null; }
+
+if ! command -v python3 > /dev/null 2>&1; then
+  _log "Installing python3..."
+  apk add --quiet python3 >> "$LOG" 2>&1
+fi
+
+exec python3 /usr/local/lib/phone-ops-mcp/server.py
