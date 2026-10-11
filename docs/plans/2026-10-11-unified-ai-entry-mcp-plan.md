@@ -6,7 +6,7 @@
 
 ## 现状盘点（探索结论）
 
-`E:\workspace\nanoMuse`（OpenMinis 1.13 fork，干净快照，origin = github.com/liuyuan168/nanoMuse）：
+`D:\work\nanoMuse`（OpenMinis 1.13 fork，干净快照，origin = github.com/liuyuan168/nanoMuse）：
 
 - Kotlin 宿主 `com.openminis.app`（Gradle，applicationId `io.github.nanomuse.app`，minSdk 26 / targetSdk 35）
 - agent 循环：`tools/AgentTools.kt`（shell_execute / file_read / file_write / file_edit / read_image / browser_use / memory_write / memory_get）
@@ -40,7 +40,7 @@ PRoot 不隔离网络栈：沙箱内 `127.0.0.1` 直通手机本机；Python 不
 
 ## Phase 0：装机与打通基线
 
-1. `E:\workspace\nanoMuse\android\src\android` 下 gradle 构建 APK，adb install
+1. `D:\work\nanoMuse\android\src\android` 下 gradle 构建 APK，adb install
 2. 手机配置 OpenAI 兼容端点（customBaseURL + apiKey）
 3. 激活 Shizuku（无线调试配对）+ 开启 nanoMuse 无障碍服务
 4. 验收：对话跑 `android-shizuku-cli activity top`、`android-a11y-cli screenshot`

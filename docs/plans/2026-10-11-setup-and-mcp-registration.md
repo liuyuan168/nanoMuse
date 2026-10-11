@@ -6,7 +6,7 @@
 ## 0. 装机（PC 侧）
 
 ```bash
-adb install -r E:\workspace\nanoMuse\android\src\android\app\build\outputs\apk\debug\app-debug.apk
+adb install -r D:\work\nanoMuse\android\src\android\app\build\outputs\apk\debug\app-debug.apk
 adb install -r D:\work\larry-todo\android\app\build\outputs\apk\debug\app-debug.apk
 ```
 
