@@ -159,6 +159,14 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
+        // nanoMuse: cold-start twin of the onNewIntent check — the wake word
+        // or assistant gesture may start the app from a dead process while
+        // the screen is off or locked. Only the wake intent opts in.
+        if (intent?.getBooleanExtra("nm_wake", false) == true) {
+            setShowWhenLocked(true)
+            setTurnScreenOn(true)
+        }
+
         // Register the crash-share "Save to..." launcher BEFORE the
         // safe-mode early-return below — ActivityResultLauncher must be
         // registered before STARTED, and the safe-mode path needs it.
@@ -702,6 +710,14 @@ class MainActivity : ComponentActivity() {
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
+        // nanoMuse: the wake word and the assistant gesture can fire while
+        // the screen is off or locked; without these flags the launched
+        // activity stays behind the keyguard. Only the wake/assistant deep
+        // link opts in — a normal launch must not surface over the lock.
+        if (intent.getBooleanExtra("nm_wake", false)) {
+            setShowWhenLocked(true)
+            setTurnScreenOn(true)
+        }
         // T51: warm-start share — ShareReceiverActivity re-launches with
         // FLAG_ACTIVITY_CLEAR_TOP, which delivers the new intent here when
         // MainActivity is already alive. Process the buffered share before

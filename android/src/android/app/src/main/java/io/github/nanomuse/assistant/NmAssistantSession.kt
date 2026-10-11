@@ -27,6 +27,9 @@ class NmAssistantSession constructor(context: android.content.Context) : VoiceIn
         if (showFlags and VoiceInteractionSession.SHOW_WITH_ASSIST == 0) return
         val intent = Intent(Intent.ACTION_VIEW, VOICE_CHAT_URI)
             .setClass(getContext(), MainActivity::class.java)
+            // nm_wake: MainActivity shows above the keyguard and turns the
+            // screen on for this launch (see its onNewIntent/onCreate).
+            .putExtra("nm_wake", true)
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         // The session's own context launches: while the session is showing,
         // the system exempts this launch from the background-activity rules.

@@ -140,10 +140,12 @@ an app holds the microphone in the background. The first turn-on asks for the mi
 permission. After a reboot the listening comes back on its own where the system lets the
 app start itself (the HyperOS/MIUI autostart permission, the same one the hub needs). If
 the microphone is busy (a call, another recorder) the service retries every five seconds.
-The chat opens right away when the app was on the screen recently; after it has been in
-the background for a while, the system may hold that launch back unless nanoMuse has the
-overlay permission (the *Background task floating window* row above), so turn that on
-for dependable wake-ups.
+Wake-ups work with the screen off and on the lock screen too: the listening loop holds a
+partial wake lock so the spotter keeps realtime pace with the display dark (without it,
+an idle CPU throttles to a fraction of realtime and drops the phrase), and the opened
+chat shows above the keyguard and turns the screen on. The launch itself still passes
+through the system's background rules, so the overlay permission (the *Background task
+floating window* row above) is what makes it dependable.
 
 **The system assistant.** The row *Digital assistant app* opens the system's picker;
 pick nanoMuse there and the assistant gesture (on HyperOS, long-press the power button)

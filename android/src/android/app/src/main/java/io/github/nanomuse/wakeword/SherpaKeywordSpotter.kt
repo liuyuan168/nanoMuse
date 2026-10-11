@@ -33,7 +33,9 @@ class SherpaKeywordSpotter(assetManager: AssetManager) {
                     joiner = "nanomuse/kws/joiner-epoch-13-avg-2-chunk-16-left-64.int8.onnx",
                 ),
                 tokens = "nanomuse/kws/tokens.txt",
-                numThreads = 1,
+                // Two threads: one leaves the decode loop below realtime pace
+                // when the CPU is throttled with the screen off.
+                numThreads = 2,
             ),
             keywordsFile = "nanomuse/kws/keywords.txt",
             keywordsThreshold = 0.25f,

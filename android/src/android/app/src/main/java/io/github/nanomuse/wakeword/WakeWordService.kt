@@ -59,6 +59,13 @@ class WakeWordService : Service() {
     private val app by lazy { applicationContext as MinisApp }
 
     @Volatile private var spotter: SherpaKeywordSpotter? = null
+    // Held for the whole listening span so the spotter keeps realtime pace
+    // with the screen off (see micLoop).
+    private val powerManagerWakeLock: android.os.PowerManager.WakeLock by lazy {
+        (getSystemService(Context.POWER_SERVICE) as android.os.PowerManager)
+            .newWakeLock(android.os.PowerManager.PARTIAL_WAKE_LOCK, "nanomuse:wakeword")
+            .apply { setReferenceCounted(false) }
+    }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -131,42 +138,51 @@ class WakeWordService : Service() {
      */
     private suspend fun micLoop() {
         val kws = ensureSpotter() ?: return
-        val buffer = ShortArray(CHUNK)
-        while (coroutineContext.isActive && !app.isAppForeground()) {
-            val recorder = openRecorder()
-            if (recorder == null) {
-                AppLogger.warning(TAG, "AudioRecord unavailable; retrying in ${RETRY_MS / 1000} s")
-                delay(RETRY_MS)
-                continue
-            }
-            kws.restart()
-            recorder.startRecording()
-            AppLogger.info(TAG, "listening for ${WakeWordSettings.DEFAULT_PHRASE}")
-            var hit = false
-            var dumped = false
-            try {
-                while (coroutineContext.isActive && !app.isAppForeground()) {
-                    val read = recorder.read(buffer, 0, buffer.size)
-                    if (read <= 0) continue
-                    if (dumpRequested) {
-                        dumpRequested = false
-                        dumped = writeDump(recorder, buffer, read)
-                    }
-                    if (kws.accept(buffer, read).isNotEmpty()) {
-                        AppLogger.info(TAG, "wake word heard")
-                        hit = true
-                        break
-                    }
+        // Hold a partial wake lock for the whole listening span: with the
+        // screen off the CPU otherwise throttles to a fraction of realtime
+        // (measured 68% → 17%) and the spotter drops audio and misses the
+        // phrase. Same pattern as AgentForegroundService's T50 lock.
+        powerManagerWakeLock.acquire()
+        try {
+            val buffer = ShortArray(CHUNK)
+            while (coroutineContext.isActive && !app.isAppForeground()) {
+                val recorder = openRecorder()
+                if (recorder == null) {
+                    AppLogger.warning(TAG, "AudioRecord unavailable; retrying in ${RETRY_MS / 1000} s")
+                    delay(RETRY_MS)
+                    continue
                 }
-            } finally {
+                kws.restart()
+                recorder.startRecording()
+                AppLogger.info(TAG, "listening for ${WakeWordSettings.DEFAULT_PHRASE}")
+                var hit = false
+                var dumped = false
                 try {
-                    recorder.stop()
-                } catch (_: IllegalStateException) {
-                    // never started, nothing to stop
+                    while (coroutineContext.isActive && !app.isAppForeground()) {
+                        val read = recorder.read(buffer, 0, buffer.size)
+                        if (read <= 0) continue
+                        if (dumpRequested) {
+                            dumpRequested = false
+                            dumped = writeDump(recorder, buffer, read)
+                        }
+                        if (kws.accept(buffer, read).isNotEmpty()) {
+                            AppLogger.info(TAG, "wake word heard")
+                            hit = true
+                            break
+                        }
+                    }
+                } finally {
+                    try {
+                        recorder.stop()
+                    } catch (_: IllegalStateException) {
+                        // never started, nothing to stop
+                    }
+                    recorder.release()
                 }
-                recorder.release()
+                if (hit) onWakeWord()
             }
-            if (hit) onWakeWord()
+        } finally {
+            powerManagerWakeLock.release()
         }
     }
 
@@ -183,6 +199,9 @@ class WakeWordService : Service() {
     private fun onWakeWord() {
         val intent = Intent(Intent.ACTION_VIEW, NmAssistantSession.VOICE_CHAT_URI)
             .setClass(this, MainActivity::class.java)
+            // nm_wake: MainActivity shows above the keyguard and turns the
+            // screen on for this launch (see its onNewIntent/onCreate).
+            .putExtra("nm_wake", true)
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         startActivity(intent)
     }
