@@ -33,6 +33,10 @@ servers.json 路径（nanoMuse 文件浏览器）：`/var/minis/mcp-servers/serv
       "url": "http://127.0.0.1:8765/mcp",
       "headers": { "Authorization": "Bearer $$LARRYTODO_MCP_TOKEN" }
     },
+    "pagevault": {
+      "url": "http://127.0.0.1:8766/mcp",
+      "headers": { "Authorization": "Bearer $$PAGEVAULT_MCP_TOKEN" }
+    },
     "phone-ops": {
       "command": "phone-ops-mcp",
       "args": []
@@ -46,6 +50,24 @@ servers.json 路径（nanoMuse 文件浏览器）：`/var/minis/mcp-servers/serv
 - `XINZHI_TOKEN` = 腾讯云 `/opt/xinzhi/.env` 的 `XINZHI_API_TOKEN`
 - `LARRYTODO_MCP_TOKEN` = larry-todo 设置页「MCP 服务」区生成的 token
 - larry-todo 的 MCP 开关在：larry-todo → 数据源配置 → 底部「MCP 服务（手机助手接入）」
+- `PAGEVAULT_MCP_TOKEN` = pagevault 经 adb 广关注入的 token（见下）
+
+### pagevault MCP 的开启方式（adb，无 UI）
+
+```bash
+# 开启（先启动一次 app 解除 stopped 状态；澎湃OS 拦隐式广播，必须显式 -n 指到组件）
+adb shell am start -n com.smail.pagevault/.MainActivity
+adb shell am broadcast -n com.smail.pagevault/.McpControlReceiver \
+  -a com.smail.pagevault.mcp.ENABLE --es token <你的token>
+
+# 关闭
+adb shell am broadcast -n com.smail.pagevault/.McpControlReceiver \
+  -a com.smail.pagevault.mcp.DISABLE
+```
+
+开启后 token 持久化（SharedPreferences），app 每次启动自动拉起 MCP 前台服务。
+工具：search_archives / read_archive / capture_url / vault_stats / delete_archive /
+backup_status。
 
 ## 3. 验收清单（在 nanoMuse 对话里逐条试）
 
@@ -57,6 +79,8 @@ servers.json 路径（nanoMuse 文件浏览器）：`/var/minis/mcp-servers/serv
 | 4 | 「最近 docker 部署有什么值得看的」 | ask_xinzhi RAG 带引用回答 |
 | 5 | 「帮我加一条明天上午买咖啡的待办」 | larry-todo MCP add_todo → 飞书/服务端 |
 | 6 | 「打开抖音刷十条」 | phone-ops open_app + scroll_screen 序列 |
+| 7 | 「搜一下金库里存的 docker 文章」 | pagevault search_archives FTS5+snippet |
+| 8 | 「把 https://… 这篇存进金库」 | pagevault capture_url SingleFile 入库 |
 
 ## 4. xinzhi 端点部署（Phase 1 上线）
 
