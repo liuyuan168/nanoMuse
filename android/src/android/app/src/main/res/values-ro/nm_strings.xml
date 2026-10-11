@@ -1111,4 +1111,12 @@
     <string name="nm_models_search">Caută modele</string>
     <string name="nm_models_search_clear">Șterge căutarea</string>
     <string name="nm_models_no_match">Niciun model nu se potrivește</string>
+    <string name="nm_wake_section">Cuvânt de activare și asistent</string>
+    <string name="nm_wake_word_row_title">Cuvânt de activare vocal</string>
+    <string name="nm_wake_word_hint">Spune %1$s pentru a începe să vorbești. Ascultarea se oprește cât timp nanoMuse este pe ecran.</string>
+    <string name="nm_wake_word_needs_mic">Permite mai întâi accesul la microfon, apoi activează.</string>
+    <string name="nm_assist_row_title">Aplicație asistent digital</string>
+    <string name="nm_assist_footer">Alege nanoMuse ca asistent, iar tasta de alimentare pornește o conversație.</string>
+    <string name="nm_wake_word_channel_name">Cuvânt de activare vocal</string>
+    <string name="nm_wake_word_notification">Ascult %1$s</string>
 </resources>

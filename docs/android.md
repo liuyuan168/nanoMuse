@@ -124,7 +124,36 @@ The web console of the same account is at the relay (`/app`), the desktop app in
 [desktop.md](desktop.md); the phone, the desktop and the web share the design language
 described in [brand.md](brand.md).
 
-## Your own key
+## Wake word and the assistant
+
+Two ways to start a conversation without touching the screen, both optional and both
+under *Settings › Background › Wake word and assistant*:
+
+**Voice wake word.** The phone listens for 小刘同学 and opens a new voice chat when it
+hears it. The listening runs on the phone: a sherpa-onnx
+keyword spotter with a 5 MB int8 model shipped in the app. No audio leaves the device
+before the wake word is heard, and nothing is recorded: the spotter consumes the
+microphone stream in memory and keeps no copy. While nanoMuse is on the screen the
+listening pauses (the chat owns the microphone then) and resumes when you leave the app.
+A quiet, permanent notification says the phone is listening; Android requires it while
+an app holds the microphone in the background. The first turn-on asks for the microphone
+permission. After a reboot the listening comes back on its own where the system lets the
+app start itself (the HyperOS/MIUI autostart permission, the same one the hub needs). If
+the microphone is busy (a call, another recorder) the service retries every five seconds.
+The chat opens right away when the app was on the screen recently; after it has been in
+the background for a while, the system may hold that launch back unless nanoMuse has the
+overlay permission (the *Background task floating window* row above), so turn that on
+for dependable wake-ups.
+
+**The system assistant.** The row *Digital assistant app* opens the system's picker;
+pick nanoMuse there and the assistant gesture (on HyperOS, long-press the power button)
+starts a new voice chat, the same way it can start the ChatGPT app. The vendor assistant
+keeps its own skills (on Xiaomi, AI calls and Mi Home control); what changes is who
+answers the gesture. The vendor's own voice wake-up ("小爱同学") is a separate listener;
+if both are on they share the microphone, so turn the one you do not want off.
+
+The phrase is fixed for now; it lives in `assets/nanomuse/kws/keywords.txt` as pinyin
+tokens, and a unit test holds that file and the model's token list together.## Your own key
 
 The vendors the app knows are one file, `assets/nanomuse/providers.json`, a copy of the
 runtime's `nanomuse/llm/providers.json` written by `node scripts/providers-json.mjs`, the same

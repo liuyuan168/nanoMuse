@@ -1103,4 +1103,12 @@
     <string name="nm_models_search">Cari model</string>
     <string name="nm_models_search_clear">Kosongkan carian</string>
     <string name="nm_models_no_match">Tiada model yang sepadan</string>
+    <string name="nm_wake_section">Kata bangun dan pembantu</string>
+    <string name="nm_wake_word_row_title">Kata bangun suara</string>
+    <string name="nm_wake_word_hint">Sebut %1$s untuk mula bercakap. Pendengaran berhenti sementara nanoMuse di skrin.</string>
+    <string name="nm_wake_word_needs_mic">Benarkan akses mikrofon dahulu, kemudian hidupkan.</string>
+    <string name="nm_assist_row_title">Aplikasi pembantu digital</string>
+    <string name="nm_assist_footer">Pilih nanoMuse sebagai pembantu, butang kuasa akan memulakan perbualan.</string>
+    <string name="nm_wake_word_channel_name">Kata bangun suara</string>
+    <string name="nm_wake_word_notification">Mendengarkan %1$s</string>
 </resources>

@@ -283,6 +283,15 @@ dependencies {
     // deps/rclone-mobile/backends/backends.go, shared with the iOS build.
     implementation(group = "", name = "rclone", ext = "aar")
 
+    // nanoMuse: sherpa-onnx (k2-fsa) for on-device wake-word detection in
+    // io.github.nanomuse.wakeword — the static-link-onnxruntime AAR from the
+    // v1.13.8 release, so arm64-v8a carries a single libsherpa-onnx-jni.so
+    // and never collides with the VAD library's libonnxruntime.so above.
+    // The AAR is the published release artifact copied to app/libs/; the
+    // zipformer zh-en 3M int8 KWS model it loads ships under
+    // assets/nanomuse/kws/.
+    implementation(group = "", name = "sherpa-onnx", ext = "aar")
+
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("com.squareup.okhttp3:okhttp-sse:4.12.0")
 

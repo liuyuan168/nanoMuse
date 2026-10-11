@@ -1080,4 +1080,12 @@
     <string name="nm_models_search">搜索模型</string>
     <string name="nm_models_search_clear">清除搜索</string>
     <string name="nm_models_no_match">没有匹配的模型</string>
+    <string name="nm_wake_section">语音唤醒与数字助理</string>
+    <string name="nm_wake_word_row_title">语音唤醒</string>
+    <string name="nm_wake_word_hint">说“%1$s”即可开始对话。nanoMuse 在屏幕上时监听会暂停。</string>
+    <string name="nm_wake_word_needs_mic">先允许麦克风权限，再打开这个开关。</string>
+    <string name="nm_assist_row_title">数字助理应用</string>
+    <string name="nm_assist_footer">把 nanoMuse 设为助理后，长按电源键即可开始对话。</string>
+    <string name="nm_wake_word_channel_name">语音唤醒</string>
+    <string name="nm_wake_word_notification">正在监听“%1$s”</string>
 </resources>

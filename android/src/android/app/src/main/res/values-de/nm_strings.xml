@@ -1107,4 +1107,12 @@
     <string name="nm_models_search">Modelle suchen</string>
     <string name="nm_models_search_clear">Suche löschen</string>
     <string name="nm_models_no_match">Kein Modell passt</string>
+    <string name="nm_wake_section">Aktivierungswort und Assistent</string>
+    <string name="nm_wake_word_row_title">Aktivierungswort</string>
+    <string name="nm_wake_word_hint">Sage %1$s, um ein Gespräch zu starten. Solange nanoMuse auf dem Bildschirm ist, wird nicht zugehört.</string>
+    <string name="nm_wake_word_needs_mic">Erlaube zuerst den Mikrofonzugriff, dann schalte es ein.</string>
+    <string name="nm_assist_row_title">Digitaler Assistent</string>
+    <string name="nm_assist_footer">Wähle nanoMuse als Assistenten, dann startet die Power-Taste ein Gespräch.</string>
+    <string name="nm_wake_word_channel_name">Aktivierungswort</string>
+    <string name="nm_wake_word_notification">Lauscht auf %1$s</string>
 </resources>

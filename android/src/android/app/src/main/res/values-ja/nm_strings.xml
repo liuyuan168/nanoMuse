@@ -1103,4 +1103,12 @@
     <string name="nm_models_search">モデルを検索</string>
     <string name="nm_models_search_clear">検索をクリア</string>
     <string name="nm_models_no_match">一致するモデルはありません</string>
+    <string name="nm_wake_section">ウェイクワードとアシスタント</string>
+    <string name="nm_wake_word_row_title">音声ウェイクワード</string>
+    <string name="nm_wake_word_hint">「%1$s」と言うと会話が始まります。nanoMuse が画面にある間は聞き取りを止めます。</string>
+    <string name="nm_wake_word_needs_mic">まずマイクを許可してから、オンにしてください。</string>
+    <string name="nm_assist_row_title">デジタルアシスタントアプリ</string>
+    <string name="nm_assist_footer">nanoMuse をアシスタントに設定すると、電源キーで会話を始められます。</string>
+    <string name="nm_wake_word_channel_name">音声ウェイクワード</string>
+    <string name="nm_wake_word_notification">%1$s を待機中</string>
 </resources>

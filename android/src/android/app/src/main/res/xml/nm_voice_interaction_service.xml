@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- nanoMuse: meta-data for io.github.nanomuse.assistant.NmAssistantService.
+     Tells the framework which VoiceInteractionSessionService instantiates
+     sessions when the user triggers the digital-assistant gesture. No
+     settingsActivity: the assistant rows live under Settings › Background
+     in the app itself (io.github.nanomuse.assistant.AssistantSettingsSection). -->
+<voice-interaction-service xmlns:android="http://schemas.android.com/apk/res/android"
+    android:sessionService="io.github.nanomuse.assistant.NmAssistantSessionService"
+    android:recognitionService="io.github.nanomuse.assistant.NmRecognitionService" />

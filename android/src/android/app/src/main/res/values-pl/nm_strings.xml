@@ -1115,4 +1115,12 @@
     <string name="nm_models_search">Szukaj modeli</string>
     <string name="nm_models_search_clear">Wyczyść wyszukiwanie</string>
     <string name="nm_models_no_match">Żaden model nie pasuje</string>
+    <string name="nm_wake_section">Słowo aktywujące i asystent</string>
+    <string name="nm_wake_word_row_title">Słowo aktywujące</string>
+    <string name="nm_wake_word_hint">Powiedz %1$s, aby zacząć rozmowę. Słuchanie jest wstrzymane, gdy nanoMuse jest na ekranie.</string>
+    <string name="nm_wake_word_needs_mic">Najpierw zezwól na dostęp do mikrofonu, potem włącz.</string>
+    <string name="nm_assist_row_title">Aplikacja asystenta cyfrowego</string>
+    <string name="nm_assist_footer">Wybierz nanoMuse jako asystenta, a przycisk zasilania rozpocznie rozmowę.</string>
+    <string name="nm_wake_word_channel_name">Słowo aktywujące</string>
+    <string name="nm_wake_word_notification">Nasłuchuje: %1$s</string>
 </resources>

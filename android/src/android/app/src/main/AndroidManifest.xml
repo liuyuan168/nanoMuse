@@ -20,6 +20,11 @@
          policy, not an OS runtime check, and Minis ships as a sideload.
     -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+    <!-- nanoMuse: wake-word listening (io.github.nanomuse.wakeword.WakeWordService).
+         A microphone-type foreground service needs both this manifest permission
+         and the runtime RECORD_AUDIO grant (the wake toggle in Settings ›
+         Background sends the user to the grant first if missing). -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
     <!-- nanoMuse: the hub connection (this phone reachable from the user's other devices) -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_REMOTE_MESSAGING" />
     <!-- T50: PARTIAL_WAKE_LOCK held by AgentForegroundService while sessions
@@ -584,6 +589,67 @@
             android:name="io.github.nanomuse.hub.HubService"
             android:exported="false"
             android:foregroundServiceType="remoteMessaging" />
+
+        <!-- nanoMuse: system digital-assistant entry. With these two services
+             declared, nanoMuse shows up in OS Settings › Default apps ›
+             Digital assistant app (next to ChatGPT and the vendor assistant);
+             once picked, the assistant gesture (HyperOS long-press power)
+             opens the voice chat via NmAssistantSession. BIND_VOICE_INTERACTION
+             keeps every other app out; only the system may bind these. -->
+        <service
+            android:name="io.github.nanomuse.assistant.NmAssistantService"
+            android:exported="true"
+            android:label="@string/app_name"
+            android:permission="android.permission.BIND_VOICE_INTERACTION">
+            <intent-filter>
+                <action android:name="android.service.voice.VoiceInteractionService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.voice_interaction"
+                android:resource="@xml/nm_voice_interaction_service" />
+        </service>
+        <service
+            android:name="io.github.nanomuse.assistant.NmAssistantSessionService"
+            android:exported="true"
+            android:permission="android.permission.BIND_VOICE_INTERACTION" />
+
+        <!-- nanoMuse: inert recognition service the assistant meta-data must
+             name (the framework rejects the entry without one); speech runs
+             through the system recognizer instead. -->
+        <service
+            android:name="io.github.nanomuse.assistant.NmRecognitionService"
+            android:exported="true"
+            android:permission="android.permission.BIND_RECOGNITION_SERVICE">
+            <intent-filter>
+                <action android:name="android.speech.RecognitionService" />
+            </intent-filter>
+        </service>
+
+        <!-- nanoMuse: wake-word listening. Runs the on-device keyword spotter
+             (sherpa-onnx) against the mic in the background and opens the
+             voice chat on a hit; the toggle lives in Settings › Background.
+             foregroundServiceType=microphone pairs with the
+             FOREGROUND_SERVICE_MICROPHONE permission declared above. -->
+        <service
+            android:name="io.github.nanomuse.wakeword.WakeWordService"
+            android:exported="false"
+            android:foregroundServiceType="microphone" />
+
+        <!-- nanoMuse: adb-triggered diagnostics (dump raw mic audio); not exported. -->
+        <receiver
+            android:name="io.github.nanomuse.wakeword.WakeWordDumpReceiver"
+            android:exported="false" />
+
+        <!-- nanoMuse: restart wake-word listening after a reboot when the
+             toggle is on. Silent no-op unless the OS lets the app autostart
+             (on HyperOS the user grants that once, same as the hub). -->
+        <receiver
+            android:name="io.github.nanomuse.wakeword.WakeWordBootReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+            </intent-filter>
+        </receiver>
 
     </application>
 </manifest>

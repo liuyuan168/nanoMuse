@@ -1107,4 +1107,12 @@
     <string name="nm_models_search">Maghanap ng mga modelo</string>
     <string name="nm_models_search_clear">I-clear ang paghahanap</string>
     <string name="nm_models_no_match">Walang tumutugmang modelo</string>
+    <string name="nm_wake_section">Wake word at assistant</string>
+    <string name="nm_wake_word_row_title">Voice wake word</string>
+    <string name="nm_wake_word_hint">Sabihin ang %1$s para magsalita. Humihinto ang pakikinig habang nasa screen ang nanoMuse.</string>
+    <string name="nm_wake_word_needs_mic">Payagan muna ang mikropono, pagkatapos ay i-on ito.</string>
+    <string name="nm_assist_row_title">Digital assistant app</string>
+    <string name="nm_assist_footer">Piliin ang nanoMuse bilang assistant at ang power key ay magbubukas ng usapan.</string>
+    <string name="nm_wake_word_channel_name">Voice wake word</string>
+    <string name="nm_wake_word_notification">Nakikinig para sa %1$s</string>
 </resources>

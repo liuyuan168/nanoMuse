@@ -243,6 +243,10 @@ fun BackgroundSettingsScreen(onBack: () -> Unit) {
                 },
             )
 
+            // nanoMuse: wake word + system assistant section; the UI lives in
+            // io.github.nanomuse.assistant.AssistantSettingsSection.
+            io.github.nanomuse.assistant.AssistantSettingsSection()
+
             Spacer(Modifier.size(16.dp))
             BgSectionTitle(stringResource(R.string.battery_opt_section_title))
             BgRow(

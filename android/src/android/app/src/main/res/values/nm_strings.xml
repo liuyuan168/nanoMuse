@@ -1084,4 +1084,12 @@
     <string name="nm_models_search">Search models</string>
     <string name="nm_models_search_clear">Clear the search</string>
     <string name="nm_models_no_match">No model matches</string>
+    <string name="nm_wake_section">Wake word and assistant</string>
+    <string name="nm_wake_word_row_title">Voice wake word</string>
+    <string name="nm_wake_word_hint">Say %1$s to start talking. Listening pauses while nanoMuse is on screen.</string>
+    <string name="nm_wake_word_needs_mic">Allow microphone access first, then turn this on.</string>
+    <string name="nm_assist_row_title">Digital assistant app</string>
+    <string name="nm_assist_footer">Choose nanoMuse as the assistant and the power key starts a conversation.</string>
+    <string name="nm_wake_word_channel_name">Voice wake word</string>
+    <string name="nm_wake_word_notification">Listening for %1$s</string>
 </resources>

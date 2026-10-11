@@ -1107,4 +1107,12 @@
     <string name="nm_models_search">Model ara</string>
     <string name="nm_models_search_clear">Aramayı temizle</string>
     <string name="nm_models_no_match">Eşleşen model yok</string>
+    <string name="nm_wake_section">Uyanma sözcüğü ve asistan</string>
+    <string name="nm_wake_word_row_title">Sesli uyanma sözcüğü</string>
+    <string name="nm_wake_word_hint">Konuşmaya başlamak için %1$s deyin. nanoMuse ekrandayken dinleme durur.</string>
+    <string name="nm_wake_word_needs_mic">Önce mikrofon erişimine izin verin, sonra açın.</string>
+    <string name="nm_assist_row_title">Dijital asistan uygulaması</string>
+    <string name="nm_assist_footer">nanoMuse\'u asistan seçin, güç tuşu konuşmayı başlatır.</string>
+    <string name="nm_wake_word_channel_name">Sesli uyanma sözcüğü</string>
+    <string name="nm_wake_word_notification">Dinliyor: %1$s</string>
 </resources>

@@ -274,6 +274,18 @@ class MinisApp : Application(), ImageLoaderFactory {
         // Activity context.
         com.openminis.app.data.AutoCompactPrefs.prime(this)
 
+        // nanoMuse: bring wake-word listening back with the process. The
+        // toggle persists, but the service itself only starts from the
+        // toggle, the boot receiver or this hook; without it a force-stop
+        // or an app update would leave the setting on with nothing running
+        // until the next reboot. The service re-checks the persisted toggle
+        // and only claims the mic once the app is backgrounded.
+        kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
+            if (io.github.nanomuse.wakeword.WakeWordSettings(this@MinisApp).isEnabled()) {
+                io.github.nanomuse.wakeword.WakeWordService.start(this@MinisApp)
+            }
+        }
+
         // T283: install NDK signal handler for native crashes (SIGSEGV/
         // SIGABRT/SIGBUS/SIGFPE/SIGILL/SIGSYS). Writes a one-shot text
         // report to filesDir/logs/native-crash-<stamp>.log before re-raising

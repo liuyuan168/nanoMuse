@@ -1103,4 +1103,12 @@
     <string name="nm_models_search">ค้นหาโมเดล</string>
     <string name="nm_models_search_clear">ล้างการค้นหา</string>
     <string name="nm_models_no_match">ไม่มีโมเดลที่ตรงกัน</string>
+    <string name="nm_wake_section">คำปลุกและผู้ช่วย</string>
+    <string name="nm_wake_word_row_title">คำปลุกด้วยเสียง</string>
+    <string name="nm_wake_word_hint">พูด %1$s เพื่อเริ่มสนทนา การฟังจะหยุดชั่วคราวขณะ nanoMuse อยู่บนหน้าจอ</string>
+    <string name="nm_wake_word_needs_mic">อนุญาตการเข้าถึงไมโครโฟนก่อน แล้วจึงเปิด</string>
+    <string name="nm_assist_row_title">แอปผู้ช่วยดิจิทัล</string>
+    <string name="nm_assist_footer">เลือก nanoMuse เป็นผู้ช่วย แล้วกดปุ่ม power เพื่อเริ่มสนทนา</string>
+    <string name="nm_wake_word_channel_name">คำปลุกด้วยเสียง</string>
+    <string name="nm_wake_word_notification">กำลังฟัง %1$s</string>
 </resources>
