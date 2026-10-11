@@ -40,10 +40,23 @@ servers.json 路径（nanoMuse 文件浏览器）：`/var/minis/mcp-servers/serv
     "phone-ops": {
       "command": "phone-ops-mcp",
       "args": []
+    },
+    "memos": {
+      "url": "<memos 侧 MCP 端点，以其交付文档为准>",
+      "headers": { "Authorization": "Bearer $$MEMOS_MCP_TOKEN" }
+    },
+    "picoclaw-relay": {
+      "url": "<relay 侧 MCP 端点，以其交付文档为准；当前中继为明文 HTTP:7088>",
+      "headers": { "Authorization": "Bearer $$PICORELAY_TOKEN" }
     }
   }
 }
 ```
+
+- memos / picoclaw-relay 两项**待对端项目交付 MCP server 后再注册**；
+  语义假设与分工见 `docs/plans/2026-10-12-seven-project-workflows-nanomuse.md`。
+  未注册时收集技能自动降级、解阻技能提示未接入，不影响其余 server。
+- picoclaw-relay 当前为公网明文 HTTP：密钥、凭证、隐私类内容不经过它传输。
 
 - `$$NAME` 引用 nanoMuse 的 App 环境变量（Settings → Environment Variables 里配），
   token 不落 servers.json
